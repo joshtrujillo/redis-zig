@@ -22,24 +22,12 @@ pub fn main() !void {
         var stream_reader = connection.stream.reader(&recv_buf);
         const reader: *std.Io.Reader = stream_reader.interface();
 
-        // Writer
-        var send_buf: [1024]u8 = undefined;
-        var stream_writer = connection.stream.writer(&send_buf);
-        const writer: *std.Io.Writer = &stream_writer.interface;
-
         while (true) {
-            while (reader.takeDelimiterExclusive('\n')) |_| {} else |err| switch (err) {
-                error.EndOfStream => {
-                    break;
-                },
-                error.StreamTooLong => {
-                    return err;
-                },
-                error.ReadFailed => {
-                    return err;
-                },
-            }
-            try writer.writeAll("+PONG\r\n");
+            reader.takeDelimiterExclusive('\n') catch |err| switch (err) {
+                error.EndOfStream => break,
+                else => return err,
+            };
+            try connection.stream.writeAll("+PONG\r\n");
         }
     }
 }
