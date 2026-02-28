@@ -22,6 +22,18 @@ pub fn main() !void {
         var stream_reader = connection.stream.reader(&recv_buf);
         const reader: *std.Io.Reader = stream_reader.interface();
 
-        while (try reader.takeDelimiterExclusive('\n') > 0) try connection.stream.writeAll("+PONG\r\n");
+        // Writer
+        var send_buf: [1024]u8 = undefined;
+        var stream_writer = connection.stream.writer(&send_buf);
+        const writer = &stream_writer.interface;
+
+        while (true) {
+            while (try reader.takeDelimiterInclusive('\n')) |line| {
+                if (std.mem.startsWith(u8, line, "PING")) {
+                    _ = try writer.write("+PONG\r\n");
+                    _ = try writer.flush();
+                }
+            }
+        }
     }
 }
