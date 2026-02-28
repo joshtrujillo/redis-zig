@@ -14,7 +14,6 @@ pub fn main() !void {
 
     while (true) {
         const connection = try listener.accept();
-        defer connection.stream.close();
         try stdout.writeAll("accepted new connection");
 
         // Reader
@@ -33,6 +32,8 @@ pub fn main() !void {
                     _ = try writer.write("+PONG\r\n");
                     _ = try writer.flush();
                 }
+            } else |_| {
+                connection.stream.close();
             }
         }
     }
