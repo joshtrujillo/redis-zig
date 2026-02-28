@@ -27,16 +27,17 @@ pub fn main() !void {
         var stream_writer = connection.stream.writer(&send_buf);
         const writer: *std.Io.Writer = &stream_writer.interface;
 
-        while (reader.takeDelimiterExclusive('\n')) |_| {
+        while (true) {
+            while (reader.takeDelimiterExclusive('\n')) |_| {} else |err| switch (err) {
+                error.EndOfStream => {},
+                error.StreamTooLong => {
+                    return err;
+                },
+                error.ReadFailed => {
+                    return err;
+                },
+            }
             try writer.writeAll("+PONG\r\n");
-        } else |err| switch (err) {
-            error.EndOfStream => {},
-            error.StreamTooLong => {
-                return err;
-            },
-            error.ReadFailed => {
-                return err;
-            },
         }
     }
 }
