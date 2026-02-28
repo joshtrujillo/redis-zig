@@ -14,9 +14,30 @@ pub fn main() !void {
 
     while (true) {
         const connection = try listener.accept();
+        defer connection.stream.close();
         try stdout.writeAll("accepted new connection");
 
-        try connection.stream.writeAll("+PONG\r\n");
-        connection.stream.close();
+        // Reader
+        var recv_buf: [1024]u8 = undefined;
+        var stream_reader = connection.stream.reader(&recv_buf);
+        const reader: *std.Io.Reader = stream_reader.interface();
+
+        // Writer
+        var send_buf: [1024]u8 = undefined;
+        var stream_writer = connection.stream.writer(&send_buf);
+        const writer: *std.Io.Writer = &stream_writer.interface;
+
+        while (reader.takeDelimiterExclusive('\n')) {
+            reader.toss(1);
+            try writer.writeAll("+PONG\r\n");
+        } else |err| switch (err) {
+            error.EndOfStream => {},
+            error.StreamTooLong => {
+                return err;
+            },
+            error.ReadFailed => {
+                return err;
+            },
+        }
     }
 }
