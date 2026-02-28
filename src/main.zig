@@ -22,12 +22,6 @@ pub fn main() !void {
         var stream_reader = connection.stream.reader(&recv_buf);
         const reader: *std.Io.Reader = stream_reader.interface();
 
-        while (true) {
-            reader.takeDelimiterExclusive('\n') catch |err| switch (err) {
-                error.EndOfStream => break,
-                else => return err,
-            };
-            try connection.stream.writeAll("+PONG\r\n");
-        }
+        while (try reader.takeDelimiterExclusive('\n') > 0) try connection.stream.writeAll("+PONG\r\n");
     }
 }
