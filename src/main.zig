@@ -29,7 +29,9 @@ pub fn main() !void {
 
         while (true) {
             while (reader.takeDelimiterExclusive('\n')) |_| {} else |err| switch (err) {
-                error.EndOfStream => {},
+                error.EndOfStream => {
+                    break;
+                },
                 error.StreamTooLong => {
                     return err;
                 },
