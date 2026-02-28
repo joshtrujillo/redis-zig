@@ -27,7 +27,7 @@ pub fn main() !void {
         const writer = &stream_writer.interface;
 
         while (true) {
-            while (try reader.takeDelimiterInclusive('\n')) |line| {
+            while (reader.takeDelimiterInclusive('\n')) |line| {
                 if (std.mem.startsWith(u8, line, "PING")) {
                     _ = try writer.write("+PONG\r\n");
                     _ = try writer.flush();
