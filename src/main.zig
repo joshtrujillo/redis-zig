@@ -14,12 +14,12 @@ pub fn main() !void {
     defer server.deinit();
 
     const flags = try posix.fcntl(server.stream.handle, posix.F.GETFL, 0);
-    try posix.fcntl(server.stream.handle, posix.F.SETFL, flags | posix.O.NONBLOCK);
+    _ = try posix.fcntl(server.stream.handle, posix.F.SETFL, flags | 0x800);
 
-    var poll_fds = std.ArrayList(posix.pollfd).init(alloc);
-    defer poll_fds.deinit();
+    var poll_fds: std.ArrayList(posix.pollfd) = .empty;
+    defer poll_fds.deinit(alloc);
 
-    try poll_fds.append(.{
+    try poll_fds.append(alloc, .{
         .fd = server.stream.handle,
         .events = posix.POLL.IN,
         .revents = 0,
@@ -30,14 +30,14 @@ pub fn main() !void {
 
         if (poll_fds.items[0].revents & posix.POLL.IN != 0) {
             const connection = try server.accept();
-            try poll_fds.append(.{
+            try poll_fds.append(alloc, .{
                 .fd = connection.stream.handle,
                 .events = posix.POLL.IN,
                 .revents = 0,
             });
         }
 
-        var i = 1;
+        var i: usize = 1;
         while (i < poll_fds.items.len) {
             const pfd = &poll_fds.items[i];
             
@@ -55,7 +55,6 @@ pub fn main() !void {
                 }
                 i += 1;
             }
-            i += 1;
         }
     }
 }
