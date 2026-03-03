@@ -53,8 +53,8 @@ pub fn main() !void {
                 } else {
                     _ = try posix.write(pfd.fd, "+PONG\r\n");
                 }
-                i += 1;
             }
+            i += 1;
         }
     }
 }
