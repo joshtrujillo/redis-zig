@@ -55,6 +55,7 @@ pub fn main() !void {
                 }
                 i += 1;
             }
+            i += 1;
         }
     }
 }
