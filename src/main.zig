@@ -6,7 +6,16 @@ const protocol = @import("protocol.zig");
 
 const Client = struct {
     conn: net.Server.Connection,
+    buf: [4096]u8 = undefined,
+    buf_len: usize = 0,
     
+    pub fn init(conn: net.Server.Connection) Client {
+        return .{
+            .conn = conn,
+            .buf_len = 0,
+        };
+    }
+
     pub fn deinit(self: *Client) void {
         self.conn.steam.close();
     }
@@ -65,10 +74,11 @@ pub fn main() !void {
             const pfd = &poll_fds.items[i];
             if (pfd.revents & posix.POLL.IN != 0) {
                 var buf: [1024]u8 = undefined;
-                // const client = clients.getPtr(pfd.fd).?;
+                const client = clients.getPtr(pfd.fd).?;
 
                 // Read from client
-                const n = posix.read(pfd.fd, &buf) catch 0;
+                const available_space = client.buf[client.buf..];
+                const n = posix.read(pfd.fd, available_space) catch 0;
 
                 if (n == 0) {
                     // Client disconnected
@@ -77,6 +87,25 @@ pub fn main() !void {
                     c.value.deinit();
                     _ = poll_fds.swapRemove(i);
                     continue;
+                }
+
+                client.buf_len += n;
+
+                const current_data = client.buf[0..client.buf_len];
+
+                if (protocol.parseAndHandle(pfd.fd, current_data)) |consumed| {
+                    // Shift remaining data to the front of the buffer
+                    const remaining = client.buf_len - consumed;
+                    std.mem.copyForwards(
+                        u8,
+                        client.buf[0..remaining], 
+                        client.buf[consumed..client.buf_len]
+                     );
+                } else |err| {
+                    if (err == error.IncompleteCommand) {
+                        continue;
+                    }
+                    // TODO: handle protocol errors
                 }
                 
                 const response = protocol.handleCommand(buf[0..n]);
