@@ -13,7 +13,7 @@ pub fn handleCommand(input: []const u8) []const u8 {
 // Responsible for identifying the RESP command
 // Checks if command is incomplete
 // returns the number of bytes processed
-pub fn parseAndHandle(fd: posix.socket_t, data: []const u8) !usize {
+pub fn parseAndHandle(_: posix.socket_t, data: []const u8) !usize {
     // Find first new line
     const first_newline = std.mem.indexOf(u8, data, "\r\n") orelse {
         return error.IncompleteCommand;
@@ -26,7 +26,7 @@ pub fn parseAndHandle(fd: posix.socket_t, data: []const u8) !usize {
         // Simple String
         '+' => {
             const end = first_newline + 2;
-            const msg = data[1..first_newline];
+            // const msg = data[1..first_newline];
             // try processSimpleString(fd, msg);
             return end;
         },
