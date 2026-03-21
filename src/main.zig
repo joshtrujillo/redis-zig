@@ -17,7 +17,7 @@ const Client = struct {
     }
 
     pub fn deinit(self: *Client) void {
-        self.conn.steam.close();
+        self.conn.stream.close();
     }
 };
 
@@ -77,7 +77,7 @@ pub fn main() !void {
                 const client = clients.getPtr(pfd.fd).?;
 
                 // Read from client
-                const available_space = client.buf[client.buf..];
+                const available_space = client.buf[client.buf_len..];
                 const n = posix.read(pfd.fd, available_space) catch 0;
 
                 if (n == 0) {
@@ -108,7 +108,7 @@ pub fn main() !void {
                     // TODO: handle protocol errors
                 }
                 
-                const response = protocol.handleCommand(buf[0..n]);
+                // const response = protocol.handleCommand(buf[0..n]);
                 _ = try posix.write(pfd.fd, "+PONG\r\n");
             }
             i += 1;
