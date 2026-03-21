@@ -41,7 +41,7 @@ pub fn parseAndHandle(fd: posix.socket_t, data: []const u8) !usize {
 
 fn processSimpleString(_: posix.socket_t, _: []const u8) !void {}
 
-fn parseArray(_: posix.socket_t, _: []const u8) !usize {}
+fn parseArray(_: posix.socket_t, _: []const u8) !void {}
 
 test "ping pong logic" {
     const result = handleCommand("PING\r\n");

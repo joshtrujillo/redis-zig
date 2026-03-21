@@ -73,7 +73,6 @@ pub fn main() !void {
         while (i < poll_fds.items.len) {
             const pfd = &poll_fds.items[i];
             if (pfd.revents & posix.POLL.IN != 0) {
-                var buf: [1024]u8 = undefined;
                 const client = clients.getPtr(pfd.fd).?;
 
                 // Read from client
