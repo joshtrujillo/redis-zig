@@ -27,13 +27,13 @@ pub fn parseAndHandle(fd: posix.socket_t, data: []const u8) !usize {
         '+' => {
             const end = first_newline + 2;
             const msg = data[1..first_newline];
-            try processSimpleString(fd, msg);
+            // try processSimpleString(fd, msg);
             return end;
         },
         // Array
         '*' => {
             // We have to check if all elements have arrived
-            return try parseArray(fd, data);
+            // return try parseArray(fd, data);
         },
         else => return error.ProtocolError,
     }
