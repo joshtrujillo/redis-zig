@@ -37,6 +37,7 @@ pub fn parseAndHandle(_: posix.socket_t, data: []const u8) !usize {
         },
         else => return error.ProtocolError,
     }
+    return 1;
 }
 
 fn processSimpleString(_: posix.socket_t, _: []const u8) !void {}
