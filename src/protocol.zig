@@ -26,7 +26,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, value: RespValue) ![]const u8 {
 
             const cmd = items[0].bulk_string;
             if (std.ascii.eqlIgnoreCase(cmd, "PING")) {
-                return std.heap."+PONG\r\n";
+                return try std.fmt.allocPrint(alloc, "+PONG\r\n", .{});
             }
             if (std.ascii.eqlIgnoreCase(cmd, "ECHO")) {
                 if (items.len < 2) return "-ERR wrong number of arguments\r\n";
