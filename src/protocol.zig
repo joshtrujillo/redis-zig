@@ -24,7 +24,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, value: RespValue) ![]const u8 {
             if (items.len == 0) return "-ERR empty array\r\n";
 
             const cmd = items[0].bulk_string;
-            const upper = std.ascii.allocUpperString(alloc, cmd);
+            const upper = try std.ascii.allocUpperString(alloc, cmd);
             const command = std.meta.stringToEnum(Command, upper) orelse return "-ERR unknown command\r\n";
 
             switch (command) {
