@@ -8,7 +8,7 @@ const Client = struct {
     conn: net.Server.Connection,
     buf: [4096]u8 = undefined,
     buf_len: usize = 0,
-    
+
     pub fn init(conn: net.Server.Connection) Client {
         return .{
             .conn = conn,
@@ -92,21 +92,17 @@ pub fn main() !void {
 
                 const current_data = client.buf[0..client.buf_len];
 
-                if (protocol.parse(alloc, current_data)) |consumed| {
-                    // Shift remaining data to the front of the buffer
-                    const remaining = client.buf_len - consumed;
-                    std.mem.copyForwards(
-                        u8,
-                        client.buf[0..remaining], 
-                        client.buf[consumed..client.buf_len]
-                     );
-                } else |err| {
+                const result = protocol.parse(alloc, current_data) catch |err| {
                     if (err == error.IncompleteCommand) {
                         continue;
                     }
                     // TODO: handle protocol errors
-                }
-                
+                };
+                defer alloc.free(result.value.array);
+
+                // Shift remaining data to the front of the buffer
+                const remaining = client.buf_len - result.consumed;
+                std.mem.copyForwards(u8, client.buf[0..remaining], client.buf[result.consumed..client.buf_len]);
             }
             i += 1;
         }
