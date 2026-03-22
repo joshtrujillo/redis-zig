@@ -17,18 +17,25 @@ const ParseResult = struct {
 };
 
 
-pub fn handleCommand(value: RespValue) []const u8 {
+pub fn handleCommand(alloc: std.mem.Allocator, value: RespValue) ![]const u8 {
     switch (value) {
         // .simple_string => |str| {},
         // .bulk_string   => {}, // |str| {},
         .array         => |items| {
+            if (items.len == 0) return "-ERR empty array\r\n";
+
             const cmd = items[0].bulk_string;
-            if (std.ascii.eqlIgnoreCase(u8, cmd, "PING")) return "+PONG\r\n";
+            if (std.ascii.eqlIgnoreCase(cmd, "PING")) {
+                return "+PONG\r\n";
+            }
+            if (std.ascii.eqlIgnoreCase(cmd, "ECHO")) {
+                if (items.len < 2) return "-ERR wrong number of arguments\r\n";
+                const arg = items[1].bulk_string;
+                const response = try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ arg.len, arg });
+                return response;
+            }
         },
-        // .integer       => |n| {},
-        // .null_value    => {},
-        // .error_msg     => |e| {},
-        else           => {},
+        else => {},
     }
     return "-ERR unknown command\r\n";
 }
@@ -81,7 +88,18 @@ pub fn parse(alloc: std.mem.Allocator, data: []const u8) !ParseResult {
 
 test "handleCommand: PING returns PONG" {
     var args = [_]RespValue{.{ .bulk_string = "PING" }};
-    try std.testing.expectEqualStrings("+PONG\r\n", handleCommand(.{ .array = &args }));
+    const result = try handleCommand(std.testing.allocator, .{ .array = &args });
+    try std.testing.expectEqualStrings("+PONG\r\n", result);
+}
+
+test "handleCommand: ECHO replies" {
+    var args = [_]RespValue{
+        .{ .bulk_string = "ECHO" },
+        .{ .bulk_string = "hello" },
+    };
+    const result = try handleCommand(std.testing.allocator, .{ .array = &args });
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("$5\r\nhello\r\n", result);
 }
 
 test "parse: returns error on incomplete data" {
