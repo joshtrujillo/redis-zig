@@ -92,12 +92,7 @@ pub fn main() !void {
 
                 const current_data = client.buf[0..client.buf_len];
 
-                const result = protocol.parse(alloc, current_data) catch |err| {
-                    if (err == error.IncompleteCommand) {
-                        continue;
-                    }
-                    // TODO: handle protocol errors
-                };
+                const result = try protocol.parse(alloc, current_data);
                 defer alloc.free(result.value.array);
 
                 // Shift remaining data to the front of the buffer
