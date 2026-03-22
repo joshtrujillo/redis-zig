@@ -22,7 +22,11 @@ const Client = struct {
 };
 
 pub fn main() !void {
-    const alloc = std.heap.page_allocator;
+    // Arena allocator so we can just free everything at once
+    const allocator = std.heap.page_allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
 
     // Server setup
     const address = try net.Address.resolveIp("127.0.0.1", 6379);
@@ -56,7 +60,6 @@ pub fn main() !void {
         // Check for new connections
         if (poll_fds.items[0].revents & posix.POLL.IN != 0) {
             const conn = try server.accept();
-            errdefer conn.stream.close();
 
             try stdout.writeAll("Accepted connection!\n");
             try clients.put(conn.stream.handle, .{ .conn = conn });
@@ -93,10 +96,8 @@ pub fn main() !void {
                 const current_data = client.buf[0..client.buf_len];
 
                 const result = try protocol.parse(alloc, current_data);
-                defer alloc.free(result.value.array);
                 
                 const response = try protocol.handleCommand(alloc, result.value);
-                defer alloc.free(response);
                 
                 _ = try posix.write(pfd.fd, response);
 

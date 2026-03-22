@@ -26,7 +26,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, value: RespValue) ![]const u8 {
 
             const cmd = items[0].bulk_string;
             if (std.ascii.eqlIgnoreCase(cmd, "PING")) {
-                return "+PONG\r\n";
+                return std.heap."+PONG\r\n";
             }
             if (std.ascii.eqlIgnoreCase(cmd, "ECHO")) {
                 if (items.len < 2) return "-ERR wrong number of arguments\r\n";
@@ -87,34 +87,42 @@ pub fn parse(alloc: std.mem.Allocator, data: []const u8) !ParseResult {
 }
 
 test "handleCommand: PING returns PONG" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
     var args = [_]RespValue{.{ .bulk_string = "PING" }};
-    const result = try handleCommand(std.testing.allocator, .{ .array = &args });
+    const result = try handleCommand(arena.allocator(), .{ .array = &args });
     try std.testing.expectEqualStrings("+PONG\r\n", result);
 }
 
 test "handleCommand: ECHO replies" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
     var args = [_]RespValue{
         .{ .bulk_string = "ECHO" },
         .{ .bulk_string = "hello" },
     };
-    const result = try handleCommand(std.testing.allocator, .{ .array = &args });
-    defer std.testing.allocator.free(result);
+    const result = try handleCommand(arena.allocator(), .{ .array = &args });
     try std.testing.expectEqualStrings("$5\r\nhello\r\n", result);
 }
 
 test "parse: returns error on incomplete data" {
-    try std.testing.expectError(error.IncompleteCommand, parse(std.testing.allocator, "*1"));
-    try std.testing.expectError(error.IncompleteCommand, parse(std.testing.allocator, ""));
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectError(error.IncompleteCommand, parse(arena.allocator(), "*1"));
+    try std.testing.expectError(error.IncompleteCommand, parse(arena.allocator(), ""));
 }
 
 test "parse: partial array header only" {
-    try std.testing.expectError(error.IncompleteCommand, parse(std.testing.allocator, "*2\r\n"));
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectError(error.IncompleteCommand, parse(arena.allocator(), "*2\r\n"));
 }
 
 test "parse: PING as RESP array" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
     const input = "*1\r\n$4\r\nPING\r\n";
-    const result = try parse(std.testing.allocator, input);
-    defer std.testing.allocator.free(result.value.array);
+    const result = try parse(arena.allocator(), input);
     try std.testing.expectEqual(input.len, result.consumed);
     switch (result.value) {
         .array => |items| {
@@ -126,9 +134,10 @@ test "parse: PING as RESP array" {
 }
 
 test "parse: ECHO as RESP array" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
     const input = "*2\r\n$4\r\nECHO\r\n$5\r\nhello\r\n";
-    const result = try parse(std.testing.allocator, input);
-    defer std.testing.allocator.free(result.value.array);
+    const result = try parse(arena.allocator(), input);
     try std.testing.expectEqual(input.len, result.consumed);
     switch (result.value) {
         .array => |items| {
