@@ -50,7 +50,7 @@ pub fn main() !void {
     }
 
     while (true) {
-        try stdout.writeAll("Looping");
+        try stdout.writeAll("Looping\n");
         _ = try posix.poll(poll_fds.items, -1);
 
         // Check for new connections
@@ -58,7 +58,7 @@ pub fn main() !void {
             const conn = try server.accept();
             errdefer conn.stream.close();
 
-            try stdout.writeAll("Accepted connection!");
+            try stdout.writeAll("Accepted connection!\n");
             try clients.put(conn.stream.handle, .{ .conn = conn });
             try poll_fds.append(alloc, .{
                 .fd = conn.stream.handle,
@@ -94,6 +94,11 @@ pub fn main() !void {
 
                 const result = try protocol.parse(alloc, current_data);
                 defer alloc.free(result.value.array);
+                
+                const response = try protocol.handleCommand(alloc, result.value);
+                defer alloc.free(response);
+                
+                _ = try posix.write(pfd.fd, response);
 
                 // Shift remaining data to the front of the buffer
                 const remaining = client.buf_len - result.consumed;

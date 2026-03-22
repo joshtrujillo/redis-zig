@@ -23,7 +23,7 @@ pub fn handleCommand(value: RespValue) []const u8 {
         // .bulk_string   => {}, // |str| {},
         .array         => |items| {
             const cmd = items[0].bulk_string;
-            if (std.mem.eql(u8, cmd, "PING")) return "+PONG\r\n";
+            if (std.ascii.eqlIgnoreCase(u8, cmd, "PING")) return "+PONG\r\n";
         },
         // .integer       => |n| {},
         // .null_value    => {},
@@ -47,11 +47,6 @@ pub fn parse(alloc: std.mem.Allocator, data: []const u8) !ParseResult {
             .consumed = first_newline + 2,
         },
         '*' => {
-            // TODO: parse count, then loop that many times parsing bulk strings
-            // 1. count = std.fmt.parseInt(usize, data[1..first_newline], 10)
-            // 2. cursor starts at first_newline + 2
-            // 3. each bulk string: expect '$', parse length, slice data, advance cursor
-            // 4. allocate items with allocator, return .{ .array = items }
             const count = std.fmt.parseInt(usize, data[1..first_newline], 10) catch {
                 return error.ProtocolError;
             };
