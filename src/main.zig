@@ -22,11 +22,7 @@ const Client = struct {
 };
 
 pub fn main() !void {
-    // Arena allocator so we can just free everything at once
-    const allocator = std.heap.page_allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
+    const server_alloc = std.heap.page_allocator;
 
     // Server setup
     const address = try net.Address.resolveIp("127.0.0.1", 6379);
@@ -38,15 +34,15 @@ pub fn main() !void {
     _ = try posix.fcntl(server.stream.handle, posix.F.SETFL, flags | 0x800);
 
     var poll_fds: std.ArrayList(posix.pollfd) = .empty;
-    defer poll_fds.deinit(alloc);
+    defer poll_fds.deinit(server_alloc);
 
-    try poll_fds.append(alloc, .{
+    try poll_fds.append(server_alloc, .{
         .fd = server.stream.handle,
         .events = posix.POLL.IN,
         .revents = 0,
     });
 
-    var clients = std.AutoHashMap(posix.socket_t, Client).init(alloc);
+    var clients = std.AutoHashMap(posix.socket_t, Client).init(server_alloc);
     defer {
         var it = clients.valueIterator();
         while (it.next()) |c| c.deinit();
@@ -63,7 +59,7 @@ pub fn main() !void {
 
             try stdout.writeAll("Accepted connection!\n");
             try clients.put(conn.stream.handle, .{ .conn = conn });
-            try poll_fds.append(alloc, .{
+            try poll_fds.append(server_alloc, .{
                 .fd = conn.stream.handle,
                 .events = posix.POLL.IN,
                 .revents = 0,
@@ -77,6 +73,12 @@ pub fn main() !void {
             const pfd = &poll_fds.items[i];
             if (pfd.revents & posix.POLL.IN != 0) {
                 const client = clients.getPtr(pfd.fd).?;
+
+                // Arena allocator so we can just free everything at once
+                const allocator = std.heap.page_allocator;
+                var arena = std.heap.ArenaAllocator.init(allocator);
+                defer arena.deinit();
+                const alloc = arena.allocator();
 
                 // Read from client
                 const available_space = client.buf[client.buf_len..];
@@ -95,7 +97,10 @@ pub fn main() !void {
 
                 const current_data = client.buf[0..client.buf_len];
 
-                const result = try protocol.parse(alloc, current_data);
+                const result = protocol.parse(alloc, current_data) catch |err| {
+                    if (err == error.IncompleteCommand) { i += 1; continue; }
+                    return err;
+                };
                 
                 const response = try protocol.handleCommand(alloc, result.value);
                 
@@ -104,6 +109,7 @@ pub fn main() !void {
                 // Shift remaining data to the front of the buffer
                 const remaining = client.buf_len - result.consumed;
                 std.mem.copyForwards(u8, client.buf[0..remaining], client.buf[result.consumed..client.buf_len]);
+                client.buf_len = remaining;
             }
             i += 1;
         }

@@ -16,23 +16,30 @@ const ParseResult = struct {
     value: RespValue,
 };
 
+const Command = enum { PING, ECHO };
 
 pub fn handleCommand(alloc: std.mem.Allocator, value: RespValue) ![]const u8 {
     switch (value) {
-        // .simple_string => |str| {},
-        // .bulk_string   => {}, // |str| {},
         .array         => |items| {
             if (items.len == 0) return "-ERR empty array\r\n";
 
             const cmd = items[0].bulk_string;
+            const upper = std.ascii.allocUpperString(alloc, cmd);
+            const command = std.meta.stringToEnum(Command, upper) orelse return "-ERR unknown command\r\n";
+
+            switch (command) {
+                .PING => return try std.fmt.allocPrint(alloc, "+PONG\r\n", .{}),
+                .ECHO => {
+                    const arg = items[1].bulk_string;
+                    return try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ arg.len, arg });
+                }
+
+            }
+            
             if (std.ascii.eqlIgnoreCase(cmd, "PING")) {
-                return try std.fmt.allocPrint(alloc, "+PONG\r\n", .{});
             }
             if (std.ascii.eqlIgnoreCase(cmd, "ECHO")) {
                 if (items.len < 2) return "-ERR wrong number of arguments\r\n";
-                const arg = items[1].bulk_string;
-                const response = try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ arg.len, arg });
-                return response;
             }
         },
         else => {},
@@ -49,17 +56,16 @@ pub fn parse(alloc: std.mem.Allocator, data: []const u8) !ParseResult {
     };
     
     switch (data[0]) {
-        '+' => return .{
+        '+' => return .{ // simple string
             .value = .{ .simple_string = data[1..first_newline] },
             .consumed = first_newline + 2,
         },
-        '*' => {
+        '*' => { // array
             const count = std.fmt.parseInt(usize, data[1..first_newline], 10) catch {
                 return error.ProtocolError;
             };
             var cursor = first_newline + 2;
             const items = try alloc.alloc(RespValue, count);
-            errdefer alloc.free(items);
             for (0..count) |i| {
                 const result = try parse(alloc, data[cursor..]);
                 items[i] = result.value;
@@ -71,8 +77,7 @@ pub fn parse(alloc: std.mem.Allocator, data: []const u8) !ParseResult {
                 .consumed = cursor,
             };
         },
-        '$' => {
-            // bulk string
+        '$' => { // bulk string
             const length = std.fmt.parseInt(usize, data[1..first_newline], 10) catch {
                 return error.ProtocolError;
             };
