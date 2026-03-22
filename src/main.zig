@@ -92,7 +92,7 @@ pub fn main() !void {
 
                 const current_data = client.buf[0..client.buf_len];
 
-                if (protocol.parseAndHandle(pfd.fd, current_data)) |consumed| {
+                if (protocol.parse(alloc, current_data)) |consumed| {
                     // Shift remaining data to the front of the buffer
                     const remaining = client.buf_len - consumed;
                     std.mem.copyForwards(
@@ -107,8 +107,6 @@ pub fn main() !void {
                     // TODO: handle protocol errors
                 }
                 
-                // const response = protocol.handleCommand(buf[0..n]);
-                _ = try posix.write(pfd.fd, "+PONG\r\n");
             }
             i += 1;
         }
