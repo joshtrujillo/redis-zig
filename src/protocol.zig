@@ -73,9 +73,11 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
         .RPUSH => {
             if (items.len < 3) return "-ERR wrong number of arguments\r\n";
             const key = items[1].bulk_string;
-            const val = items[2].bulk_string;
-            const length = try store.rpush(key, val);
-            return std.fmt.allocPrint(alloc, ":{d}\r\n", .{ length });
+            var number_of_elements: usize = 0;
+            for (items[2..]) |item| {
+                number_of_elements = try store.rpush(key, item.bulk_string);
+            }
+            return std.fmt.allocPrint(alloc, ":{d}\r\n", .{ number_of_elements });
         }
     }
 }
