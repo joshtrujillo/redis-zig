@@ -17,7 +17,7 @@ const ParseResult = struct {
     value: RespValue,
 };
 
-const Command = enum { PING, ECHO, SET, GET };
+const Command = enum { PING, ECHO, SET, GET, RPUSH };
 
 const NULL_STRING = "$-1\r\n";
 
@@ -69,6 +69,13 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
             } else {
                 return NULL_STRING;
             }
+        },
+        .RPUSH => {
+            if (items.len < 3) return "-ERR wrong number of arguments\r\n";
+            const key = items[1].bulk_string;
+            const val = items[2].bulk_string;
+            const length = try store.rpush(key, val);
+            return std.fmt.allocPrint(alloc, ":{d}\r\n", .{ length });
         }
     }
 }

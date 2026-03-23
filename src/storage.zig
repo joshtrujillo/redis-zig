@@ -15,7 +15,14 @@ pub const Store = struct {
         var it = self.map.iterator();
         while (it.next()) |entry| {
             self.alloc.free(entry.key_ptr.*);
-            self.alloc.free(entry.value_ptr.*.value);
+            switch (entry.value_ptr.*.value) {
+                .string => |s| self.alloc.free(s),
+                .list => |list| {
+                    var l = list;
+                    for (l.items) |item| self.alloc.free(item);
+                    l.deinit(self.alloc);
+                },
+            }
         }
         self.map.deinit();
     }
@@ -23,19 +30,47 @@ pub const Store = struct {
     pub fn get(self: *Store, key: []const u8) ?[]const u8 {
         const entry = self.map.get(key) orelse return null;
         if (entry.expires_at) |exp| {
-            if (std.time.milliTimestamp() >= exp) return null;
+            if (std.time.milliTimestamp() >= exp) {
+                _ = self.map.remove(key);
+                return null;
+            }
         }
-        return entry.value;
+        return entry.value.string;
     }
 
     pub fn set(self: *Store, key: []const u8, value: []const u8, expires_at: ?i64) !void {
         const owned_key = try self.alloc.dupe(u8, key);
         const owned_value = try self.alloc.dupe(u8, value);
-        try self.map.put(owned_key, .{ .value = owned_value, .expires_at = expires_at });
+        try self.map.put(owned_key, .{ .value = .{ .string = owned_value }, .expires_at = expires_at });
+    }
+
+    pub fn rpush(self: *Store, key: []const u8, value: []const u8) !usize {
+        const owned_value = try self.alloc.dupe(u8, value);
+
+        if (self.map.getPtr(key)) |entry| {
+            switch (entry.value) {
+                .list => |*list| {
+                    try list.append(self.alloc, owned_value);
+                    return list.items.len;
+                },
+            }
+        } else {
+            // key doesn't exist; create a new list
+            const owned_key = try self.alloc.dupe(u8, key);
+            var list = try std.ArrayList([]const u8).init(self.alloc);
+            try list.append(self.alloc, owned_value);
+            try self.map.put(owned_key, .{ .value = .{ .list = list }, .expires_at = null });
+            return 1;
+        }
     }
 };
 
 const Entry = struct {
-    value: []const u8,
+    value: Value,
     expires_at: ?i64, // null is no expiry
+};
+
+const Value = union(enum) {
+    string: []const u8,
+    list: std.ArrayList([]const u8),
 };
