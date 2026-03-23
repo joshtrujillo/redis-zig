@@ -21,6 +21,8 @@ const Command = enum { PING, ECHO, SET, GET };
 
 const NULL_STRING = "$-1\r\n";
 
+// Handles the action taken for each RESP command
+// returns the direct RESP reply to be written to the client's socket
 pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: RespValue) ![]const u8 {
     const items = switch (value) {
         .array => |arr| arr,

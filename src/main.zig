@@ -25,7 +25,7 @@ const Client = struct {
 pub fn main() !void {
     const server_alloc = std.heap.page_allocator;
 
-    const store = storage.Store.init(server_alloc);
+    var store = storage.Store.init(server_alloc);
     defer store.deinit();
 
     // Server setup
