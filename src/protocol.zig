@@ -44,14 +44,28 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
             if (items.len < 3) return "-ERR wrong number of arguments\r\n";
             const key = items[1].bulk_string;
             const val = items[2].bulk_string;
-            try store.set(key, val);
+            var expires_at: ?i64 = null;
+            if (items.len >= 5) {
+                const arg = items[3].bulk_string;
+                if (std.ascii.eqlIgnoreCase(arg, "PX")) {
+                    const ps_ms: i64 = std.fmt.parseInt(i64, items[4].bulk_string, 10) catch {
+                        return error.ProtocolError;
+                    };
+                    if (ps_ms <= 0) {
+                        return error.ProtocolError;
+                    }
+                    expires_at = std.time.milliTimestamp() + ps_ms;
+                }
+            }
+
+            try store.set(key, val, expires_at);
             return "+OK\r\n";
         },
         .GET => {
             if (items.len < 2) return "-ERR wrong number of arguments\r\n";
             const key = items[1].bulk_string;
             if (store.get(key)) |v| {
-                return try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ v.len, v});
+                return try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ v.len, v})   ;
             } else {
                 return NULL_STRING;
             }
@@ -148,6 +162,46 @@ test "handleCommand: SET returns OK" {
     };
     const result = try handleCommand(arena.allocator(), &store, .{ .array = &args });
     try std.testing.expectEqualStrings("+OK\r\n", result);
+}
+
+test "handleCommand: SET & GET returns key" {
+    var store = testStore();
+    defer store.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var set_args = [_]RespValue{
+        .{ .bulk_string = "SET" },
+        .{ .bulk_string = "foo" },
+        .{ .bulk_string = "bar" },
+    };
+
+    _ = try handleCommand(arena.allocator(), &store, .{ .array = &set_args });
+    
+    var get_args = [_]RespValue{
+        .{ .bulk_string = "GET" },
+        .{ .bulk_string = "foo" },
+    };
+
+    const result = try handleCommand(arena.allocator(), &store, .{ .array = &get_args });
+    try std.testing.expectEqualStrings("$3\r\nbar\r\n", result);
+}
+
+test "handleCommand: GET returns RESP null bulk string on non-existant string" {
+    var store = testStore();
+    defer store.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var get_args = [_]RespValue{
+        .{ .bulk_string = "GET" },
+        .{ .bulk_string = "foo" },
+    };
+
+    const result = try handleCommand(arena.allocator(), &store, .{ .array = &get_args });
+    try std.testing.expectEqualStrings("$-1\r\n", result);
 }
 
 test "parse: returns error on incomplete data" {
