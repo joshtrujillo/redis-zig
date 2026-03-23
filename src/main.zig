@@ -3,6 +3,7 @@ const stdout = std.fs.File.stdout();
 const net = std.net;
 const posix = std.posix;
 const protocol = @import("protocol.zig");
+const storage = @import("storage.zig");
 
 const Client = struct {
     conn: net.Server.Connection,
@@ -23,6 +24,9 @@ const Client = struct {
 
 pub fn main() !void {
     const server_alloc = std.heap.page_allocator;
+
+    const store = storage.Store.init(server_alloc);
+    defer store.deinit();
 
     // Server setup
     const address = try net.Address.resolveIp("127.0.0.1", 6379);
@@ -50,14 +54,12 @@ pub fn main() !void {
     }
 
     while (true) {
-        try stdout.writeAll("Looping\n");
         _ = try posix.poll(poll_fds.items, -1);
 
         // Check for new connections
         if (poll_fds.items[0].revents & posix.POLL.IN != 0) {
             const conn = try server.accept();
 
-            try stdout.writeAll("Accepted connection!\n");
             try clients.put(conn.stream.handle, .{ .conn = conn });
             try poll_fds.append(server_alloc, .{
                 .fd = conn.stream.handle,
@@ -75,10 +77,9 @@ pub fn main() !void {
                 const client = clients.getPtr(pfd.fd).?;
 
                 // Arena allocator so we can just free everything at once
-                const allocator = std.heap.page_allocator;
-                var arena = std.heap.ArenaAllocator.init(allocator);
+                var arena = std.heap.ArenaAllocator.init(server_alloc);
                 defer arena.deinit();
-                const alloc = arena.allocator();
+                const conn_alloc = arena.allocator();
 
                 // Read from client
                 const available_space = client.buf[client.buf_len..];
@@ -97,12 +98,12 @@ pub fn main() !void {
 
                 const current_data = client.buf[0..client.buf_len];
 
-                const result = protocol.parse(alloc, current_data) catch |err| {
+                const result = protocol.parse(conn_alloc, current_data) catch |err| {
                     if (err == error.IncompleteCommand) { i += 1; continue; }
                     return err;
                 };
                 
-                const response = try protocol.handleCommand(alloc, result.value);
+                const response = try protocol.handleCommand(conn_alloc, &store, result.value);
                 
                 _ = try posix.write(pfd.fd, response);
 

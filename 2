@@ -1,7 +1,6 @@
 // src/protocol.zig
 
 const std = @import("std");
-const storage = @import("storage.zig");
 
 const RespValue = union(enum) {
     simple_string: []const u8,
@@ -17,44 +16,26 @@ const ParseResult = struct {
     value: RespValue,
 };
 
-const Command = enum { PING, ECHO, SET, GET };
+const Command = enum { PING, ECHO };
 
-const NULL_STRING = "$-1\r\n";
+pub fn handleCommand(alloc: std.mem.Allocator, value: RespValue) ![]const u8 {
+    if (!value.array) return "-ERR empty array\r\n";
 
-pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: RespValue) ![]const u8 {
-    const items = switch (value) {
-        .array => |arr| arr,
-        else => return "-ERR empty array\r\n",
-    };
+    const items = value.array;
+    if (items.len == 0) return "-ERR empty array\r\n";
 
     const cmd = items[0].bulk_string;
     const upper = try std.ascii.allocUpperString(alloc, cmd);
     const command = std.meta.stringToEnum(Command, upper) orelse return "-ERR unknown command\r\n";
 
     switch (command) {
-        .PING => return "+PONG\r\n",
+        .PING => return try std.fmt.allocPrint(alloc, "+PONG\r\n", .{}),
         .ECHO => {
-            if (items.len < 2) return "-ERR wrong number of arguments\r\n";
             const arg = items[1].bulk_string;
             return try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ arg.len, arg });
-        },
-        .SET => {
-            if (items.len < 3) return "-ERR wrong number of arguments\r\n";
-            const key = items[1].bulk_string;
-            const val = items[2].bulk_string;
-            try store.set(key, val);
-            return "+OK\r\n";
-        },
-        .GET => {
-            if (items.len < 2) return "-ERR wrong number of arguments\r\n";
-            const key = items[1].bulk_string;
-            if (store.get(key)) |v| {
-                return try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ v.len, v});
-            } else {
-                return NULL_STRING;
-            }
         }
     }
+    return "-ERR unknown command\r\n";
 }
 
 // Responsible for identifying the RESP command
@@ -101,51 +82,23 @@ pub fn parse(alloc: std.mem.Allocator, data: []const u8) !ParseResult {
     }
 }
 
-fn testStore() storage.Store {
-    return storage.Store.init(std.testing.allocator);
-}
-
 test "handleCommand: PING returns PONG" {
-    var store = testStore();
-    defer store.deinit();
-
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-
     var args = [_]RespValue{.{ .bulk_string = "PING" }};
-    const result = try handleCommand(arena.allocator(), &store, .{ .array = &args });
+    const result = try handleCommand(arena.allocator(), .{ .array = &args });
     try std.testing.expectEqualStrings("+PONG\r\n", result);
 }
 
 test "handleCommand: ECHO replies" {
-    var store = testStore();
-    defer store.deinit();
-
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-
     var args = [_]RespValue{
         .{ .bulk_string = "ECHO" },
         .{ .bulk_string = "hello" },
     };
-    const result = try handleCommand(arena.allocator(), &store, .{ .array = &args });
+    const result = try handleCommand(arena.allocator(), .{ .array = &args });
     try std.testing.expectEqualStrings("$5\r\nhello\r\n", result);
-}
-
-test "handleCommand: SET returns OK" {
-    var store = testStore();
-    defer store.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var args = [_]RespValue{
-        .{ .bulk_string = "SET" },
-        .{ .bulk_string = "foo" },
-        .{ .bulk_string = "bar" },
-    };
-    const result = try handleCommand(arena.allocator(), &store, .{ .array = &args });
-    try std.testing.expectEqualStrings("+OK\r\n", result);
 }
 
 test "parse: returns error on incomplete data" {
