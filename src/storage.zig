@@ -53,11 +53,12 @@ pub const Store = struct {
                     try list.append(self.alloc, owned_value);
                     return list.items.len;
                 },
+                .string => return error.WrongType,
             }
         } else {
             // key doesn't exist; create a new list
             const owned_key = try self.alloc.dupe(u8, key);
-            var list = try std.ArrayList([]const u8).init(self.alloc);
+            var list: std.ArrayList([]const u8) = .empty;
             try list.append(self.alloc, owned_value);
             try self.map.put(owned_key, .{ .value = .{ .list = list }, .expires_at = null });
             return 1;
