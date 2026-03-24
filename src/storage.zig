@@ -35,7 +35,10 @@ pub const Store = struct {
                 return null;
             }
         }
-        return entry.value.string;
+        return switch (entry.value) {
+            .string => |s| s,
+            .list => return error.WrongType,
+        };
     }
 
     pub fn set(self: *Store, key: []const u8, value: []const u8, expires_at: ?i64) !void {
@@ -62,6 +65,18 @@ pub const Store = struct {
             try list.append(self.alloc, owned_value);
             try self.map.put(owned_key, .{ .value = .{ .list = list }, .expires_at = null });
             return 1;
+        }
+    }
+
+    pub fn lrange(self: *Store, key: []const u8, start: usize, stop: usize) ?[][]const u8 {
+        const entry = self.map.get(key) orelse return null;
+        const list_len = entry.value.list.items.len;
+        if (start >= list_len or start > stop) return null;
+
+        if (stop >= list_len) {
+            return entry.value.list.items[start..];
+        } else {
+            return entry.value.list.items[start .. stop + 1];
         }
     }
 };
