@@ -90,7 +90,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
             var a: std.io.Writer.Allocating = .init(alloc);
             const w = &a.writer;
             try w.print("*{d}\r\n", .{range.len});
-            for (items[2..]) |item| {
+            for (range) |item| {
                 try w.print("${d}\r\n{s}\r\n", .{ item.bulk_string.len, item.bulk_string });
             }
             return a.toOwnedSlice();
