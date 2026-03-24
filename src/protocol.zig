@@ -91,7 +91,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
             const w = &a.writer;
             try w.print("*{d}\r\n", .{range.len});
             for (range) |item| {
-                try w.print("${d}\r\n{s}\r\n", .{ item.bulk_string.len, item.bulk_string });
+                try w.print("${d}\r\n{s}\r\n", .{ item.len, item });
             }
             return a.toOwnedSlice();
         },
