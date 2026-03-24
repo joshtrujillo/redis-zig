@@ -17,7 +17,7 @@ const ParseResult = struct {
     value: RespValue,
 };
 
-const Command = enum { PING, ECHO, SET, GET, RPUSH, LRANGE };
+const Command = enum { PING, ECHO, SET, GET, RPUSH, LPUSH, LRANGE };
 
 const NULL_STRING = "$-1\r\n";
 
@@ -80,17 +80,27 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
 
             return try std.fmt.allocPrint(alloc, ":{d}\r\n", .{number_of_elements});
         },
+        .LPUSH => {
+            if (items.len < 3) return "-ERR wrong number of arguments\r\n";
+            const key = items[1].bulk_string;
+            var number_of_elements: usize = 0;
+            for (items[2..]) |item| {
+                number_of_elements = try store.lpush(key, item.bulk_string);
+            }
+
+            return try std.fmt.allocPrint(alloc, ":{d}\r\n", .{number_of_elements});
+        },
         .LRANGE => {
             if (items.len < 4) return "-ERR wrong number of arguments\r\n";
             const key = items[1].bulk_string;
             const start = std.fmt.parseInt(i64, items[2].bulk_string, 10) catch return "-ERR value is not an integer\r\n";
             const stop = std.fmt.parseInt(i64, items[3].bulk_string, 10) catch return "-ERR value is not an integer\r\n";
-            const range = store.lrange(key, start, stop) orelse return "*0\r\n";
+            var iter = store.lrange(key, start, stop) orelse return "*0\r\n";
 
             var a: std.io.Writer.Allocating = .init(alloc);
             const w = &a.writer;
-            try w.print("*{d}\r\n", .{range.len});
-            for (range) |item| {
+            try w.print("*{d}\r\n", .{iter.count});
+            while (iter.next()) |item| {
                 try w.print("${d}\r\n{s}\r\n", .{ item.len, item });
             }
             return a.toOwnedSlice();
@@ -290,6 +300,75 @@ test "handleCommand: RPUSH handles multiple elements" {
 
     var second_args = [_]RespValue{
         .{ .bulk_string = "RPUSH" },
+        .{ .bulk_string = "foo" },
+        .{ .bulk_string = "titi" },
+    };
+
+    result = try handleCommand(arena.allocator(), &store, .{ .array = &second_args });
+    try std.testing.expectEqualStrings(":3\r\n", result);
+}
+
+test "handleCommand: LPUSH creates a new list for new key" {
+    var store = testStore();
+    defer store.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var args = [_]RespValue{
+        .{ .bulk_string = "LPUSH" },
+        .{ .bulk_string = "foo" },
+        .{ .bulk_string = "bar" },
+    };
+
+    const result = try handleCommand(arena.allocator(), &store, .{ .array = &args });
+    try std.testing.expectEqualStrings(":1\r\n", result);
+}
+
+test "handleCommand: LPUSH appends to list for existing key" {
+    var store = testStore();
+    defer store.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var args = [_]RespValue{
+        .{ .bulk_string = "LPUSH" },
+        .{ .bulk_string = "foo" },
+        .{ .bulk_string = "bar" },
+    };
+
+    _ = try handleCommand(arena.allocator(), &store, .{ .array = &args });
+
+    args = [_]RespValue{
+        .{ .bulk_string = "LPUSH" },
+        .{ .bulk_string = "foo" },
+        .{ .bulk_string = "bash" },
+    };
+
+    const result = try handleCommand(arena.allocator(), &store, .{ .array = &args });
+    try std.testing.expectEqualStrings(":2\r\n", result);
+}
+
+test "handleCommand: LPUSH handles multiple elements" {
+    var store = testStore();
+    defer store.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var first_args = [_]RespValue{
+        .{ .bulk_string = "LPUSH" },
+        .{ .bulk_string = "foo" },
+        .{ .bulk_string = "bar" },
+        .{ .bulk_string = "bash" },
+    };
+
+    var result = try handleCommand(arena.allocator(), &store, .{ .array = &first_args });
+    try std.testing.expectEqualStrings(":2\r\n", result);
+
+    var second_args = [_]RespValue{
+        .{ .bulk_string = "LPUSH" },
         .{ .bulk_string = "foo" },
         .{ .bulk_string = "titi" },
     };
