@@ -37,7 +37,7 @@ pub const Store = struct {
         }
         return switch (entry.value) {
             .string => |s| s,
-            .list => return error.WrongType,
+            .list => return null,
         };
     }
 
