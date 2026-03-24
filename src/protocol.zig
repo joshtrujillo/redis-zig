@@ -83,8 +83,8 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
         .LRANGE => {
             if (items.len < 4) return "-ERR wrong number of arguments\r\n";
             const key = items[1].bulk_string;
-            const start = std.fmt.parseInt(usize, items[2].bulk_string, 10) catch return "-ERR value is not an integer\r\n";
-            const stop = std.fmt.parseInt(usize, items[3].bulk_string, 10) catch return "-ERR value is not an integer\r\n";
+            const start = std.fmt.parseInt(i64, items[2].bulk_string, 10) catch return "-ERR value is not an integer\r\n";
+            const stop = std.fmt.parseInt(i64, items[3].bulk_string, 10) catch return "-ERR value is not an integer\r\n";
             const range = store.lrange(key, start, stop) orelse return "*0\r\n";
 
             var a: std.io.Writer.Allocating = .init(alloc);
@@ -296,6 +296,100 @@ test "handleCommand: RPUSH handles multiple elements" {
 
     result = try handleCommand(arena.allocator(), &store, .{ .array = &second_args });
     try std.testing.expectEqualStrings(":3\r\n", result);
+}
+
+test "handleCommand: LRANGE returns elements" {
+    var store = testStore();
+    defer store.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var push_args = [_]RespValue{
+        .{ .bulk_string = "RPUSH" },
+        .{ .bulk_string = "mylist" },
+        .{ .bulk_string = "one" },
+        .{ .bulk_string = "two" },
+        .{ .bulk_string = "three" },
+    };
+    _ = try handleCommand(arena.allocator(), &store, .{ .array = &push_args });
+
+    var range_args = [_]RespValue{
+        .{ .bulk_string = "LRANGE" },
+        .{ .bulk_string = "mylist" },
+        .{ .bulk_string = "0" },
+        .{ .bulk_string = "2" },
+    };
+    const result = try handleCommand(arena.allocator(), &store, .{ .array = &range_args });
+    try std.testing.expectEqualStrings("*3\r\n$3\r\none\r\n$3\r\ntwo\r\n$5\r\nthree\r\n", result);
+}
+
+test "handleCommand: LRANGE stop beyond end clamps to list length" {
+    var store = testStore();
+    defer store.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var push_args = [_]RespValue{
+        .{ .bulk_string = "RPUSH" },
+        .{ .bulk_string = "mylist" },
+        .{ .bulk_string = "a" },
+        .{ .bulk_string = "b" },
+    };
+    _ = try handleCommand(arena.allocator(), &store, .{ .array = &push_args });
+
+    var range_args = [_]RespValue{
+        .{ .bulk_string = "LRANGE" },
+        .{ .bulk_string = "mylist" },
+        .{ .bulk_string = "0" },
+        .{ .bulk_string = "100" },
+    };
+    const result = try handleCommand(arena.allocator(), &store, .{ .array = &range_args });
+    try std.testing.expectEqualStrings("*2\r\n$1\r\na\r\n$1\r\nb\r\n", result);
+}
+
+test "handleCommand: LRANGE returns empty for non-existent key" {
+    var store = testStore();
+    defer store.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var range_args = [_]RespValue{
+        .{ .bulk_string = "LRANGE" },
+        .{ .bulk_string = "nokey" },
+        .{ .bulk_string = "0" },
+        .{ .bulk_string = "1" },
+    };
+    const result = try handleCommand(arena.allocator(), &store, .{ .array = &range_args });
+    try std.testing.expectEqualStrings("*0\r\n", result);
+}
+
+test "handleCommand: LRANGE negative stop returns full list" {
+    var store = testStore();
+    defer store.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var push_args = [_]RespValue{
+        .{ .bulk_string = "RPUSH" },
+        .{ .bulk_string = "mylist" },
+        .{ .bulk_string = "one" },
+        .{ .bulk_string = "two" },
+        .{ .bulk_string = "three" },
+    };
+    _ = try handleCommand(arena.allocator(), &store, .{ .array = &push_args });
+
+    var range_args = [_]RespValue{
+        .{ .bulk_string = "LRANGE" },
+        .{ .bulk_string = "mylist" },
+        .{ .bulk_string = "0" },
+        .{ .bulk_string = "-1" },
+    };
+    const result = try handleCommand(arena.allocator(), &store, .{ .array = &range_args });
+    try std.testing.expectEqualStrings("*3\r\n$3\r\none\r\n$3\r\ntwo\r\n$5\r\nthree\r\n", result);
 }
 
 test "parse: returns error on incomplete data" {

@@ -68,16 +68,21 @@ pub const Store = struct {
         }
     }
 
-    pub fn lrange(self: *Store, key: []const u8, start: usize, stop: usize) ?[][]const u8 {
+    pub fn lrange(self: *Store, key: []const u8, start: i64, stop: i64) ?[][]const u8 {
         const entry = self.map.get(key) orelse return null;
-        const list_len = entry.value.list.items.len;
-        if (start >= list_len or start > stop) return null;
+        const list_len: i64 = @intCast(entry.value.list.items.len);
 
-        if (stop >= list_len) {
-            return entry.value.list.items[start..];
-        } else {
-            return entry.value.list.items[start .. stop + 1];
-        }
+        var norm_start: i64 = if (start < 0) list_len + start else start;
+        var norm_stop: i64 = if (stop < 0) list_len + stop else stop;
+
+        if (norm_start < 0) norm_start = 0;
+        if (norm_stop >= list_len) norm_stop = list_len - 1;
+
+        if (norm_start > norm_stop) return null;
+
+        const s: usize = @intCast(norm_start);
+        const e: usize = @intCast(norm_stop);
+        return entry.value.list.items[s .. e + 1];
     }
 };
 
