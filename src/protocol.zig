@@ -17,7 +17,16 @@ const ParseResult = struct {
     value: RespValue,
 };
 
-const Command = enum { PING, ECHO, SET, GET, RPUSH, LPUSH, LRANGE };
+const Command = enum {
+    PING,
+    ECHO,
+    SET,
+    GET,
+    RPUSH,
+    LPUSH,
+    LRANGE,
+    LLEN,
+};
 
 const NULL_STRING = "$-1\r\n";
 
@@ -78,7 +87,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
                 number_of_elements = try store.rpush(key, item.bulk_string);
             }
 
-            return try std.fmt.allocPrint(alloc, ":{d}\r\n", .{number_of_elements});
+            return try std.fmt.allocPrint(alloc, ":{d}\r\n", .{ number_of_elements });
         },
         .LPUSH => {
             if (items.len < 3) return "-ERR wrong number of arguments\r\n";
@@ -88,7 +97,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
                 number_of_elements = try store.lpush(key, item.bulk_string);
             }
 
-            return try std.fmt.allocPrint(alloc, ":{d}\r\n", .{number_of_elements});
+            return try std.fmt.allocPrint(alloc, ":{d}\r\n", .{ number_of_elements });
         },
         .LRANGE => {
             if (items.len < 4) return "-ERR wrong number of arguments\r\n";
@@ -105,6 +114,12 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
             }
             return a.toOwnedSlice();
         },
+        .LLEN => {
+            if (items.len < 2) return "-ERR wrong number of arguments\r\n";
+            const key = items[1].bulk_string;
+            const len = store.llen(key);
+            return try std.fmt.allocPrint(alloc, ":{d}\r\n", .{ len });
+        }
     }
 }
 
@@ -471,6 +486,45 @@ test "handleCommand: LRANGE negative stop returns full list" {
     try std.testing.expectEqualStrings("*3\r\n$3\r\none\r\n$3\r\ntwo\r\n$5\r\nthree\r\n", result);
 }
 
+test "handleCommand: LLEN returns length for existing list" {
+    var store = testStore();
+    defer store.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var rpush_args = [_]RespValue{
+        .{ .bulk_string = "RPUSH" },
+        .{ .bulk_string = "list" },
+        .{ .bulk_string = "a" },
+        .{ .bulk_string = "b" },
+    };
+    _ = try handleCommand(arena.allocator(), &store, .{ .array = &rpush_args });
+
+    var llen_args = [_]RespValue{
+        .{ .bulk_string = "LLEN" },
+        .{ .bulk_string = "list" },
+    };
+    const result = try handleCommand(arena.allocator(), &store, .{ .array = &llen_args });
+
+    try std.testing.expectEqualStrings(":2\r\n", result);
+}
+
+test "handleCommand: LLEN returns 0 for non-existent list" {
+    var store = testStore();
+    defer store.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var llen_args = [_]RespValue{
+        .{ .bulk_string = "LLEN" },
+        .{ .bulk_string = "list" },
+    };
+    const result = try handleCommand(arena.allocator(), &store, .{ .array = &llen_args });
+
+    try std.testing.expectEqualStrings(":0\r\n", result);
+}
 test "parse: returns error on incomplete data" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

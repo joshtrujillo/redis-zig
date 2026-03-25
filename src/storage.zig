@@ -155,6 +155,11 @@ pub const Store = struct {
 
         return .{ .current = node, .count = count };
     }
+
+    pub fn llen(self: *Store, key: []const u8) usize {
+        const entry = self.map.get(key) orelse return 0;
+        return entry.value.list.len;
+    }
 };
 
 pub const LrangeIterator = struct {
