@@ -17,6 +17,7 @@ const ParseResult = struct {
     value: RespValue,
 };
 
+// Define as enum for switch in handleCommand()
 const Command = enum {
     PING,
     ECHO,
@@ -26,6 +27,7 @@ const Command = enum {
     LPUSH,
     LRANGE,
     LLEN,
+    LPOP,
 };
 
 const NULL_STRING = "$-1\r\n";
@@ -73,11 +75,8 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
         .GET => {
             if (items.len < 2) return "-ERR wrong number of arguments\r\n";
             const key = items[1].bulk_string;
-            if (store.get(key)) |v| {
-                return try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ v.len, v });
-            } else {
-                return NULL_STRING;
-            }
+            const v = store.get(key) orelse return NULL_STRING;
+            return try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ v.len, v });
         },
         .RPUSH => {
             if (items.len < 3) return "-ERR wrong number of arguments\r\n";
@@ -119,6 +118,13 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
             const key = items[1].bulk_string;
             const len = store.llen(key);
             return try std.fmt.allocPrint(alloc, ":{d}\r\n", .{ len });
+        },
+        .LPOP => {
+            if (items.len < 2) return "-ERR wrong number of arguments\r\n";
+            const key = items[1].bulk_string;
+            const v = store.lpop(key) orelse return NULL_STRING;
+            defer store.alloc.free(v);
+            return try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ v.len, v });
         }
     }
 }
@@ -167,364 +173,169 @@ pub fn parse(alloc: std.mem.Allocator, data: []const u8) !ParseResult {
     }
 }
 
-fn testStore() storage.Store {
-    return storage.Store.init(std.testing.allocator);
-}
+// Tests
+
+const TestCtx = struct {
+    store: storage.Store,
+    arena: std.heap.ArenaAllocator,
+
+    fn init() TestCtx {
+        return .{
+            .store = storage.Store.init(std.testing.allocator),
+            .arena = std.heap.ArenaAllocator.init(std.testing.allocator),
+        };
+    }
+
+    fn deinit(self: *TestCtx) void {
+        self.store.deinit();
+        self.arena.deinit();
+    }
+
+    fn cmd(self: *TestCtx, args: []const []const u8) ![]const u8 {
+        const alloc = self.arena.allocator();
+        const resp_args = try alloc.alloc(RespValue, args.len);
+        for (args, resp_args) |arg, *resp| resp.* = .{ .bulk_string = arg };
+        return handleCommand(alloc, &self.store, .{ .array = resp_args });
+    }
+
+    fn expect(self: *TestCtx, expected: []const u8, args: []const []const u8) !void {
+        try std.testing.expectEqualStrings(expected, try self.cmd(args));
+    }
+};
 
 test "handleCommand: PING returns PONG" {
-    var store = testStore();
-    defer store.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var args = [_]RespValue{.{ .bulk_string = "PING" }};
-    const result = try handleCommand(arena.allocator(), &store, .{ .array = &args });
-    try std.testing.expectEqualStrings("+PONG\r\n", result);
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    try ctx.expect("+PONG\r\n", &.{"PING"});
 }
 
 test "handleCommand: ECHO replies" {
-    var store = testStore();
-    defer store.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var args = [_]RespValue{
-        .{ .bulk_string = "ECHO" },
-        .{ .bulk_string = "hello" },
-    };
-    const result = try handleCommand(arena.allocator(), &store, .{ .array = &args });
-    try std.testing.expectEqualStrings("$5\r\nhello\r\n", result);
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    try ctx.expect("$5\r\nhello\r\n", &.{ "ECHO", "hello" });
 }
 
 test "handleCommand: SET returns OK" {
-    var store = testStore();
-    defer store.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var args = [_]RespValue{
-        .{ .bulk_string = "SET" },
-        .{ .bulk_string = "foo" },
-        .{ .bulk_string = "bar" },
-    };
-    const result = try handleCommand(arena.allocator(), &store, .{ .array = &args });
-    try std.testing.expectEqualStrings("+OK\r\n", result);
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    try ctx.expect("+OK\r\n", &.{ "SET", "foo", "bar" });
 }
 
 test "handleCommand: SET & GET returns key" {
-    var store = testStore();
-    defer store.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var set_args = [_]RespValue{
-        .{ .bulk_string = "SET" },
-        .{ .bulk_string = "foo" },
-        .{ .bulk_string = "bar" },
-    };
-
-    _ = try handleCommand(arena.allocator(), &store, .{ .array = &set_args });
-
-    var get_args = [_]RespValue{
-        .{ .bulk_string = "GET" },
-        .{ .bulk_string = "foo" },
-    };
-
-    const result = try handleCommand(arena.allocator(), &store, .{ .array = &get_args });
-    try std.testing.expectEqualStrings("$3\r\nbar\r\n", result);
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "SET", "foo", "bar" });
+    try ctx.expect("$3\r\nbar\r\n", &.{ "GET", "foo" });
 }
 
 test "handleCommand: GET returns RESP null bulk string on non-existant string" {
-    var store = testStore();
-    defer store.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var get_args = [_]RespValue{
-        .{ .bulk_string = "GET" },
-        .{ .bulk_string = "foo" },
-    };
-
-    const result = try handleCommand(arena.allocator(), &store, .{ .array = &get_args });
-    try std.testing.expectEqualStrings("$-1\r\n", result);
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    try ctx.expect("$-1\r\n", &.{ "GET", "foo" });
 }
 
 test "handleCommand: RPUSH creates a new list for new key" {
-    var store = testStore();
-    defer store.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var args = [_]RespValue{
-        .{ .bulk_string = "RPUSH" },
-        .{ .bulk_string = "foo" },
-        .{ .bulk_string = "bar" },
-    };
-
-    const result = try handleCommand(arena.allocator(), &store, .{ .array = &args });
-    try std.testing.expectEqualStrings(":1\r\n", result);
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    try ctx.expect(":1\r\n", &.{ "RPUSH", "foo", "bar" });
 }
 
 test "handleCommand: RPUSH appends to list for existing key" {
-    var store = testStore();
-    defer store.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var args = [_]RespValue{
-        .{ .bulk_string = "RPUSH" },
-        .{ .bulk_string = "foo" },
-        .{ .bulk_string = "bar" },
-    };
-
-    _ = try handleCommand(arena.allocator(), &store, .{ .array = &args });
-
-    args = [_]RespValue{
-        .{ .bulk_string = "RPUSH" },
-        .{ .bulk_string = "foo" },
-        .{ .bulk_string = "bash" },
-    };
-
-    const result = try handleCommand(arena.allocator(), &store, .{ .array = &args });
-    try std.testing.expectEqualStrings(":2\r\n", result);
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "RPUSH", "foo", "bar" });
+    try ctx.expect(":2\r\n", &.{ "RPUSH", "foo", "bash" });
 }
 
 test "handleCommand: RPUSH handles multiple elements" {
-    var store = testStore();
-    defer store.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var first_args = [_]RespValue{
-        .{ .bulk_string = "RPUSH" },
-        .{ .bulk_string = "foo" },
-        .{ .bulk_string = "bar" },
-        .{ .bulk_string = "bash" },
-    };
-
-    var result = try handleCommand(arena.allocator(), &store, .{ .array = &first_args });
-    try std.testing.expectEqualStrings(":2\r\n", result);
-
-    var second_args = [_]RespValue{
-        .{ .bulk_string = "RPUSH" },
-        .{ .bulk_string = "foo" },
-        .{ .bulk_string = "titi" },
-    };
-
-    result = try handleCommand(arena.allocator(), &store, .{ .array = &second_args });
-    try std.testing.expectEqualStrings(":3\r\n", result);
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    try ctx.expect(":2\r\n", &.{ "RPUSH", "foo", "bar", "bash" });
+    try ctx.expect(":3\r\n", &.{ "RPUSH", "foo", "titi" });
 }
 
 test "handleCommand: LPUSH creates a new list for new key" {
-    var store = testStore();
-    defer store.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var args = [_]RespValue{
-        .{ .bulk_string = "LPUSH" },
-        .{ .bulk_string = "foo" },
-        .{ .bulk_string = "bar" },
-    };
-
-    const result = try handleCommand(arena.allocator(), &store, .{ .array = &args });
-    try std.testing.expectEqualStrings(":1\r\n", result);
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    try ctx.expect(":1\r\n", &.{ "LPUSH", "foo", "bar" });
 }
 
 test "handleCommand: LPUSH appends to list for existing key" {
-    var store = testStore();
-    defer store.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var args = [_]RespValue{
-        .{ .bulk_string = "LPUSH" },
-        .{ .bulk_string = "foo" },
-        .{ .bulk_string = "bar" },
-    };
-
-    _ = try handleCommand(arena.allocator(), &store, .{ .array = &args });
-
-    args = [_]RespValue{
-        .{ .bulk_string = "LPUSH" },
-        .{ .bulk_string = "foo" },
-        .{ .bulk_string = "bash" },
-    };
-
-    const result = try handleCommand(arena.allocator(), &store, .{ .array = &args });
-    try std.testing.expectEqualStrings(":2\r\n", result);
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "LPUSH", "foo", "bar" });
+    try ctx.expect(":2\r\n", &.{ "LPUSH", "foo", "bash" });
 }
 
 test "handleCommand: LPUSH handles multiple elements" {
-    var store = testStore();
-    defer store.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var first_args = [_]RespValue{
-        .{ .bulk_string = "LPUSH" },
-        .{ .bulk_string = "foo" },
-        .{ .bulk_string = "bar" },
-        .{ .bulk_string = "bash" },
-    };
-
-    var result = try handleCommand(arena.allocator(), &store, .{ .array = &first_args });
-    try std.testing.expectEqualStrings(":2\r\n", result);
-
-    var second_args = [_]RespValue{
-        .{ .bulk_string = "LPUSH" },
-        .{ .bulk_string = "foo" },
-        .{ .bulk_string = "titi" },
-    };
-
-    result = try handleCommand(arena.allocator(), &store, .{ .array = &second_args });
-    try std.testing.expectEqualStrings(":3\r\n", result);
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    try ctx.expect(":2\r\n", &.{ "LPUSH", "foo", "bar", "bash" });
+    try ctx.expect(":3\r\n", &.{ "LPUSH", "foo", "titi" });
 }
 
 test "handleCommand: LRANGE returns elements" {
-    var store = testStore();
-    defer store.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var push_args = [_]RespValue{
-        .{ .bulk_string = "RPUSH" },
-        .{ .bulk_string = "mylist" },
-        .{ .bulk_string = "one" },
-        .{ .bulk_string = "two" },
-        .{ .bulk_string = "three" },
-    };
-    _ = try handleCommand(arena.allocator(), &store, .{ .array = &push_args });
-
-    var range_args = [_]RespValue{
-        .{ .bulk_string = "LRANGE" },
-        .{ .bulk_string = "mylist" },
-        .{ .bulk_string = "0" },
-        .{ .bulk_string = "2" },
-    };
-    const result = try handleCommand(arena.allocator(), &store, .{ .array = &range_args });
-    try std.testing.expectEqualStrings("*3\r\n$3\r\none\r\n$3\r\ntwo\r\n$5\r\nthree\r\n", result);
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "RPUSH", "mylist", "one", "two", "three" });
+    try ctx.expect("*3\r\n$3\r\none\r\n$3\r\ntwo\r\n$5\r\nthree\r\n", &.{ "LRANGE", "mylist", "0", "2" });
 }
 
 test "handleCommand: LRANGE stop beyond end clamps to list length" {
-    var store = testStore();
-    defer store.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var push_args = [_]RespValue{
-        .{ .bulk_string = "RPUSH" },
-        .{ .bulk_string = "mylist" },
-        .{ .bulk_string = "a" },
-        .{ .bulk_string = "b" },
-    };
-    _ = try handleCommand(arena.allocator(), &store, .{ .array = &push_args });
-
-    var range_args = [_]RespValue{
-        .{ .bulk_string = "LRANGE" },
-        .{ .bulk_string = "mylist" },
-        .{ .bulk_string = "0" },
-        .{ .bulk_string = "100" },
-    };
-    const result = try handleCommand(arena.allocator(), &store, .{ .array = &range_args });
-    try std.testing.expectEqualStrings("*2\r\n$1\r\na\r\n$1\r\nb\r\n", result);
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "RPUSH", "mylist", "a", "b" });
+    try ctx.expect("*2\r\n$1\r\na\r\n$1\r\nb\r\n", &.{ "LRANGE", "mylist", "0", "100" });
 }
 
 test "handleCommand: LRANGE returns empty for non-existent key" {
-    var store = testStore();
-    defer store.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var range_args = [_]RespValue{
-        .{ .bulk_string = "LRANGE" },
-        .{ .bulk_string = "nokey" },
-        .{ .bulk_string = "0" },
-        .{ .bulk_string = "1" },
-    };
-    const result = try handleCommand(arena.allocator(), &store, .{ .array = &range_args });
-    try std.testing.expectEqualStrings("*0\r\n", result);
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    try ctx.expect("*0\r\n", &.{ "LRANGE", "nokey", "0", "1" });
 }
 
 test "handleCommand: LRANGE negative stop returns full list" {
-    var store = testStore();
-    defer store.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var push_args = [_]RespValue{
-        .{ .bulk_string = "RPUSH" },
-        .{ .bulk_string = "mylist" },
-        .{ .bulk_string = "one" },
-        .{ .bulk_string = "two" },
-        .{ .bulk_string = "three" },
-    };
-    _ = try handleCommand(arena.allocator(), &store, .{ .array = &push_args });
-
-    var range_args = [_]RespValue{
-        .{ .bulk_string = "LRANGE" },
-        .{ .bulk_string = "mylist" },
-        .{ .bulk_string = "0" },
-        .{ .bulk_string = "-1" },
-    };
-    const result = try handleCommand(arena.allocator(), &store, .{ .array = &range_args });
-    try std.testing.expectEqualStrings("*3\r\n$3\r\none\r\n$3\r\ntwo\r\n$5\r\nthree\r\n", result);
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "RPUSH", "mylist", "one", "two", "three" });
+    try ctx.expect("*3\r\n$3\r\none\r\n$3\r\ntwo\r\n$5\r\nthree\r\n", &.{ "LRANGE", "mylist", "0", "-1" });
 }
 
 test "handleCommand: LLEN returns length for existing list" {
-    var store = testStore();
-    defer store.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var rpush_args = [_]RespValue{
-        .{ .bulk_string = "RPUSH" },
-        .{ .bulk_string = "list" },
-        .{ .bulk_string = "a" },
-        .{ .bulk_string = "b" },
-    };
-    _ = try handleCommand(arena.allocator(), &store, .{ .array = &rpush_args });
-
-    var llen_args = [_]RespValue{
-        .{ .bulk_string = "LLEN" },
-        .{ .bulk_string = "list" },
-    };
-    const result = try handleCommand(arena.allocator(), &store, .{ .array = &llen_args });
-
-    try std.testing.expectEqualStrings(":2\r\n", result);
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "RPUSH", "list", "a", "b" });
+    try ctx.expect(":2\r\n", &.{ "LLEN", "list" });
 }
 
 test "handleCommand: LLEN returns 0 for non-existent list" {
-    var store = testStore();
-    defer store.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    var llen_args = [_]RespValue{
-        .{ .bulk_string = "LLEN" },
-        .{ .bulk_string = "list" },
-    };
-    const result = try handleCommand(arena.allocator(), &store, .{ .array = &llen_args });
-
-    try std.testing.expectEqualStrings(":0\r\n", result);
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    try ctx.expect(":0\r\n", &.{ "LLEN", "list" });
 }
+
+test "handleCommand: LPOP pops from a list" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "RPUSH", "list", "one", "two", "three", "four", "five" });
+    try ctx.expect("$3\r\none\r\n", &.{ "LPOP", "list" });
+}
+
+test "handleCommand: LPOP returns null bulk string for empty list" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "RPUSH", "list", "one" });
+    _ = try ctx.cmd(&.{ "LPOP", "list"});
+    try ctx.expect("$-1\r\n", &.{ "LPOP", "list" });
+}
+
+test "handleCommand: LPOP returns null bulk string for non-existent list" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "LPOP", "list"});
+    try ctx.expect("$-1\r\n", &.{ "LPOP", "list" });
+}
+
 test "parse: returns error on incomplete data" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

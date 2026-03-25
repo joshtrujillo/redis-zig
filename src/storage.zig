@@ -74,7 +74,7 @@ pub const Store = struct {
     }
 
     pub fn get(self: *Store, key: []const u8) ?[]const u8 {
-        const entry = self.map.get(key) orelse return null;
+        const entry = self.map.getPtr(key) orelse return null;
         if (entry.expires_at) |exp| {
             if (std.time.milliTimestamp() >= exp) {
                 _ = self.map.remove(key);
@@ -134,7 +134,7 @@ pub const Store = struct {
     }
 
     pub fn lrange(self: *Store, key: []const u8, start: i64, stop: i64) ?LrangeIterator {
-        const entry = self.map.get(key) orelse return null;
+        const entry = self.map.getPtr(key) orelse return null;
         const list = &entry.value.list;
         const list_len: i64 = @intCast(list.len);
 
@@ -157,8 +157,22 @@ pub const Store = struct {
     }
 
     pub fn llen(self: *Store, key: []const u8) usize {
-        const entry = self.map.get(key) orelse return 0;
+        const entry = self.map.getPtr(key) orelse return 0;
         return entry.value.list.len;
+    }
+
+    pub fn lpop(self: *Store, key: []const u8) ?[]const u8 {
+        const entry = self.map.getPtr(key) orelse return null;
+        const list = switch (entry.value) {
+            .string => return null,
+            .list => |*l| l
+        };
+        const node = list.list.popFirst() orelse return null;
+        list.len -= 1;
+        const item: *ListItem = @fieldParentPtr("node", node);
+        const data = item.data;
+        self.alloc.destroy(item);
+        return data;
     }
 };
 
