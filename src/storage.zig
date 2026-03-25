@@ -19,27 +19,27 @@ const List = struct {
     list: std.DoublyLinkedList = .{},
     len: usize = 0,
 
-    fn append(self: *List, alloc: std.mem.Allocator, data: []const u8) !void {
-        const item = try alloc.create(ListItem);
+    fn append(self: *List, pool: *std.heap.MemoryPool(ListItem), data: []const u8) !void {
+        const item = try pool.create();
         item.* = .{ .data = data };
         self.list.append(&item.node);
         self.len += 1;
     }
 
-    fn prepend(self: *List, alloc: std.mem.Allocator, data: []const u8) !void {
-        const item = try alloc.create(ListItem);
+    fn prepend(self: *List, pool: *std.heap.MemoryPool(ListItem), data: []const u8) !void {
+        const item = try pool.create();
         item.* = .{ .data = data };
         self.list.prepend(&item.node);
         self.len += 1;
     }
 
-    fn deinit(self: *List, alloc: std.mem.Allocator) void {
+    fn deinit(self: *List, alloc: std.mem.Allocator, pool: *std.heap.MemoryPool(ListItem)) void {
         var it = self.list.first;
         while (it) |node| {
             it = node.next;
             const item: *ListItem = @fieldParentPtr("node", node);
             alloc.free(item.data);
-            alloc.destroy(item);
+            pool.destroy(item);
         }
     }
 };
@@ -50,11 +50,13 @@ const List = struct {
 pub const Store = struct {
     map: std.StringHashMap(Entry),
     alloc: std.mem.Allocator,
+    pool: std.heap.MemoryPool(ListItem),
 
     pub fn init(alloc: std.mem.Allocator) Store {
         return .{
             .alloc = alloc,
             .map = std.StringHashMap(Entry).init(alloc),
+            .pool = std.heap.MemoryPool(ListItem).init(alloc),
         };
     }
 
@@ -64,13 +66,11 @@ pub const Store = struct {
             self.alloc.free(entry.key_ptr.*);
             switch (entry.value_ptr.*.value) {
                 .string => |s| self.alloc.free(s),
-                .list => |*list| {
-                    var l = list;
-                    l.deinit(self.alloc);
-                },
+                .list => |*list| list.deinit(self.alloc, &self.pool),
             }
         }
         self.map.deinit();
+        self.pool.deinit();
     }
 
     pub fn get(self: *Store, key: []const u8) ?[]const u8 {
@@ -98,16 +98,16 @@ pub const Store = struct {
 
         if (self.map.getPtr(key)) |entry| {
             switch (entry.value) {
-                .list => |*list| {
-                    try list.append(self.alloc, owned_value);
-                    return list.len;
+                .list => |*l| {
+                    try l.append(&self.pool, owned_value);
+                    return l.len;
                 },
                 .string => return error.WrongType,
             }
         } else {
             const owned_key = try self.alloc.dupe(u8, key);
             var list: List = .{};
-            try list.append(self.alloc, owned_value);
+            try list.append(&self.pool, owned_value);
             try self.map.put(owned_key, .{ .value = .{ .list = list }, .expires_at = null });
             return 1;
         }
@@ -118,24 +118,27 @@ pub const Store = struct {
 
         if (self.map.getPtr(key)) |entry| {
             switch (entry.value) {
-                .list => |*list| {
-                    try list.prepend(self.alloc, owned_value);
-                    return list.len;
+                .list => |*l| {
+                    try l.prepend(&self.pool, owned_value);
+                    return l.len;
                 },
                 .string => return error.WrongType,
             }
         } else {
             const owned_key = try self.alloc.dupe(u8, key);
             var list: List = .{};
-            try list.prepend(self.alloc, owned_value);
+            try list.prepend(&self.pool, owned_value);
             try self.map.put(owned_key, .{ .value = .{ .list = list }, .expires_at = null });
             return 1;
         }
     }
 
-    pub fn lrange(self: *Store, key: []const u8, start: i64, stop: i64) ?LrangeIterator {
+    pub fn lrange(self: *Store, key: []const u8, start: i64, stop: i64) ?ListIterator {
         const entry = self.map.getPtr(key) orelse return null;
-        const list = &entry.value.list;
+        const list = switch (entry.value) {
+            .string => return null,
+            .list => |*l| l,
+        };
         const list_len: i64 = @intCast(list.len);
 
         var norm_start: i64 = if (start < 0) list_len + start else start;
@@ -161,26 +164,33 @@ pub const Store = struct {
         return entry.value.list.len;
     }
 
-    pub fn lpop(self: *Store, key: []const u8) ?[]const u8 {
+    pub fn lpop(self: *Store, dest_alloc: std.mem.Allocator, key: []const u8, count: usize) !?[][]const u8 {
         const entry = self.map.getPtr(key) orelse return null;
         const list = switch (entry.value) {
             .string => return null,
-            .list => |*l| l
+            .list => |*l| l,
         };
-        const node = list.list.popFirst() orelse return null;
-        list.len -= 1;
-        const item: *ListItem = @fieldParentPtr("node", node);
-        const data = item.data;
-        self.alloc.destroy(item);
-        return data;
+        const actual = @min(count, list.len);
+        if (actual == 0) return null;
+
+        const result = try dest_alloc.alloc([]const u8, actual);
+        for (result) |*slot| {
+            const node = list.list.popFirst().?;
+            list.len -= 1;
+            const item: *ListItem = @fieldParentPtr("node", node);
+            slot.* = try dest_alloc.dupe(u8, item.data);
+            self.alloc.free(item.data);
+            self.pool.destroy(item);
+        }
+        return result;
     }
 };
 
-pub const LrangeIterator = struct {
+pub const ListIterator = struct {
     current: ?*std.DoublyLinkedList.Node,
     count: usize,
 
-    pub fn next(self: *LrangeIterator) ?[]const u8 {
+    pub fn next(self: *ListIterator) ?[]const u8 {
         if (self.count == 0) return null;
         const node = self.current orelse return null;
         const item: *ListItem = @fieldParentPtr("node", node);

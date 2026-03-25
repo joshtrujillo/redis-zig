@@ -108,9 +108,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
             var a: std.io.Writer.Allocating = .init(alloc);
             const w = &a.writer;
             try w.print("*{d}\r\n", .{iter.count});
-            while (iter.next()) |item| {
-                try w.print("${d}\r\n{s}\r\n", .{ item.len, item });
-            }
+            while (iter.next()) |item| try w.print("${d}\r\n{s}\r\n", .{ item.len, item });
             return a.toOwnedSlice();
         },
         .LLEN => {
@@ -122,9 +120,19 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
         .LPOP => {
             if (items.len < 2) return "-ERR wrong number of arguments\r\n";
             const key = items[1].bulk_string;
-            const v = store.lpop(key) orelse return NULL_STRING;
-            defer store.alloc.free(v);
-            return try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ v.len, v });
+            const count_arg: ?usize = if (items.len > 2)
+                std.fmt.parseInt(usize, items[2].bulk_string, 10) catch return "-ERR value is not an integer\r\n"
+            else
+                null;
+            const popped = try store.lpop(alloc, key, count_arg orelse 1) orelse return NULL_STRING;
+            if (count_arg == null) {
+                return try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ popped[0].len, popped[0] });
+            }
+            var a: std.io.Writer.Allocating = .init(alloc);
+            const w = &a.writer;
+            try w.print("*{d}\r\n", .{popped.len});
+            for (popped) |item| try w.print("${d}\r\n{s}\r\n", .{ item.len, item });
+            return a.toOwnedSlice();
         }
     }
 }
@@ -314,11 +322,18 @@ test "handleCommand: LLEN returns 0 for non-existent list" {
     try ctx.expect(":0\r\n", &.{ "LLEN", "list" });
 }
 
-test "handleCommand: LPOP pops from a list" {
+test "handleCommand: LPOP pops a single item from a list" {
     var ctx = TestCtx.init();
     defer ctx.deinit();
     _ = try ctx.cmd(&.{ "RPUSH", "list", "one", "two", "three", "four", "five" });
     try ctx.expect("$3\r\none\r\n", &.{ "LPOP", "list" });
+}
+
+test "handleCommand: LPOP pops multiple items from a list" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "RPUSH", "list", "one", "two", "three", "four", "five" });
+    try ctx.expect("*2\r\n$3\r\none\r\n$3\r\ntwo\r\n", &.{ "LPOP", "list", "2" });
 }
 
 test "handleCommand: LPOP returns null bulk string for empty list" {
