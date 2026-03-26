@@ -187,8 +187,8 @@ fn wakeBlocked(
             if (!std.mem.eql(u8, k, key)) continue;
 
             const fd = e.key_ptr.*;
-            const entry = blocked.fetchRemove(fd).?;
-            defer &entry.value.deinit(server_alloc);
+            var entry = blocked.fetchRemove(fd).?;
+            defer entry.value.deinit(server_alloc);
             
             const popped = try store.lpop(arena_alloc, key, 1) orelse return;
             const response = try std.fmt.allocPrint(
