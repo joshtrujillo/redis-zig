@@ -67,7 +67,7 @@ pub fn main() !void {
     var blocked = std.AutoHashMap(posix.socket_t, BlockedClient).init(server_alloc);
     defer {
         var it = blocked.valueIterator();
-        while (it.next()) |b| b.deinit();
+        while (it.next()) |b| b.deinit(server_alloc);
         blocked.deinit();
     }
 
