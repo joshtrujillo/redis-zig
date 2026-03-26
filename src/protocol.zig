@@ -3,6 +3,22 @@
 const std = @import("std");
 const storage = @import("storage.zig");
 
+pub const BlockInfo = struct {
+    keys: [][]const u8,
+    timeout_ms: u64, // 0 is block forever
+};
+
+pub const PushAction = struct {
+    response: []const u8,
+    key: []const u8, // key that was pushed to
+};
+
+pub const Action = union(enum) {
+    response: []const u8,
+    block: BlockInfo,
+    push: PushAction,
+};
+
 const RespValue = union(enum) {
     simple_string: []const u8,
     bulk_string: []const u8,
@@ -28,31 +44,33 @@ const Command = enum {
     LRANGE,
     LLEN,
     LPOP,
+    BLPOP,
 };
 
 const NULL_STRING = "$-1\r\n";
 
 // Handles the action taken for each RESP command
 // returns the direct RESP reply to be written to the client's socket
-pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: RespValue) ![]const u8 {
+pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: RespValue) !Action {
     const items = switch (value) {
         .array => |arr| arr,
-        else => return "-ERR empty array\r\n",
+        else => return .{ .response = "-ERR empty array\r\n" },
     };
 
     const cmd = items[0].bulk_string;
     const upper = try std.ascii.allocUpperString(alloc, cmd);
-    const command = std.meta.stringToEnum(Command, upper) orelse return "-ERR unknown command\r\n";
+    const command = std.meta.stringToEnum(Command, upper) orelse return .{ .response = "-ERR unknown command\r\n" };
 
     switch (command) {
-        .PING => return "+PONG\r\n",
+        .PING => return .{ .response = "+PONG\r\n"},
         .ECHO => {
-            if (items.len < 2) return "-ERR wrong number of arguments\r\n";
+            if (items.len < 2) return .{ .response = "-ERR wrong number of arguments\r\n" };
             const arg = items[1].bulk_string;
-            return try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ arg.len, arg });
+            const response = try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ arg.len, arg });
+            return .{ .response = response };
         },
         .SET => {
-            if (items.len < 3) return "-ERR wrong number of arguments\r\n";
+            if (items.len < 3) return .{ .response = "-ERR wrong number of arguments\r\n" };
             const key = items[1].bulk_string;
             const val = items[2].bulk_string;
             var expires_at: ?i64 = null;
@@ -70,70 +88,106 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
             }
 
             try store.set(key, val, expires_at);
-            return "+OK\r\n";
+            return .{ .response = "+OK\r\n" };
         },
         .GET => {
-            if (items.len < 2) return "-ERR wrong number of arguments\r\n";
+            if (items.len < 2) return .{ .response = "-ERR wrong number of arguments\r\n" };
             const key = items[1].bulk_string;
-            const v = store.get(key) orelse return NULL_STRING;
-            return try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ v.len, v });
+            const v = store.get(key) orelse return .{ .response = NULL_STRING };
+            const response = try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ v.len, v });
+            return .{ .response = response };
         },
         .RPUSH => {
-            if (items.len < 3) return "-ERR wrong number of arguments\r\n";
+            if (items.len < 3) return .{ .response = "-ERR wrong number of arguments\r\n" };
             const key = items[1].bulk_string;
             var number_of_elements: usize = 0;
             for (items[2..]) |item| {
                 number_of_elements = try store.rpush(key, item.bulk_string);
             }
 
-            return try std.fmt.allocPrint(alloc, ":{d}\r\n", .{ number_of_elements });
+            const response = try std.fmt.allocPrint(alloc, ":{d}\r\n", .{ number_of_elements });
+            return .{ .push = .{ .response = response, .key = key } };
         },
         .LPUSH => {
-            if (items.len < 3) return "-ERR wrong number of arguments\r\n";
+            if (items.len < 3) return .{ .response = "-ERR wrong number of arguments\r\n" };
             const key = items[1].bulk_string;
             var number_of_elements: usize = 0;
             for (items[2..]) |item| {
                 number_of_elements = try store.lpush(key, item.bulk_string);
             }
 
-            return try std.fmt.allocPrint(alloc, ":{d}\r\n", .{ number_of_elements });
+            const response = try std.fmt.allocPrint(alloc, ":{d}\r\n", .{ number_of_elements });
+            return .{ .push = .{ .response = response, .key = key } };
         },
         .LRANGE => {
-            if (items.len < 4) return "-ERR wrong number of arguments\r\n";
+            if (items.len < 4) return .{ .response = "-ERR wrong number of arguments\r\n" };
             const key = items[1].bulk_string;
-            const start = std.fmt.parseInt(i64, items[2].bulk_string, 10) catch return "-ERR value is not an integer\r\n";
-            const stop = std.fmt.parseInt(i64, items[3].bulk_string, 10) catch return "-ERR value is not an integer\r\n";
-            var iter = store.lrange(key, start, stop) orelse return "*0\r\n";
-
+            const start = std.fmt.parseInt(i64, items[2].bulk_string, 10) catch {
+                return .{ .response = "-ERR value is not an integer\r\n" };
+            };
+            const stop = std.fmt.parseInt(i64, items[3].bulk_string, 10) catch {
+                return .{ .response = "-ERR value is not an integer\r\n" };
+            };
+            var iter = store.lrange(key, start, stop) orelse {
+                return .{ .response = "*0\r\n" };
+            };
             var a: std.io.Writer.Allocating = .init(alloc);
             const w = &a.writer;
             try w.print("*{d}\r\n", .{iter.count});
             while (iter.next()) |item| try w.print("${d}\r\n{s}\r\n", .{ item.len, item });
-            return a.toOwnedSlice();
+            return .{ .response = try a.toOwnedSlice() };
         },
         .LLEN => {
-            if (items.len < 2) return "-ERR wrong number of arguments\r\n";
+            if (items.len < 2) return .{ .response = "-ERR wrong number of arguments\r\n" };
             const key = items[1].bulk_string;
             const len = store.llen(key);
-            return try std.fmt.allocPrint(alloc, ":{d}\r\n", .{ len });
+            const response = try std.fmt.allocPrint(alloc, ":{d}\r\n", .{ len });
+            return .{ .response = response };
         },
         .LPOP => {
-            if (items.len < 2) return "-ERR wrong number of arguments\r\n";
+            if (items.len < 2) return .{ .response = "-ERR wrong number of arguments\r\n" };
             const key = items[1].bulk_string;
             const count_arg: ?usize = if (items.len > 2)
-                std.fmt.parseInt(usize, items[2].bulk_string, 10) catch return "-ERR value is not an integer\r\n"
+                std.fmt.parseInt(usize, items[2].bulk_string, 10) catch {
+                    return .{ .response = "-ERR value is not an integer\r\n" };
+                }
             else
                 null;
-            const popped = try store.lpop(alloc, key, count_arg orelse 1) orelse return NULL_STRING;
+            const popped = try store.lpop(alloc, key, count_arg orelse 1) orelse {
+                return .{ .response = NULL_STRING };
+            };
             if (count_arg == null) {
-                return try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ popped[0].len, popped[0] });
+                const response = try std.fmt.allocPrint(
+                    alloc,
+                    "${d}\r\n{s}\r\n",
+                    .{ popped[0].len, popped[0] }
+                );
+                return .{ .response = response };
             }
             var a: std.io.Writer.Allocating = .init(alloc);
             const w = &a.writer;
             try w.print("*{d}\r\n", .{popped.len});
             for (popped) |item| try w.print("${d}\r\n{s}\r\n", .{ item.len, item });
-            return a.toOwnedSlice();
-        }
+            return .{ .response = try a.toOwnedSlice() };
+        },
+        .BLPOP => {
+            if (items.len < 3) return .{ .response = "-ERR wrong number of arguments\r\n" };
+            const timeout_s = std.fmt.parseInt(u64, items[items.len - 1].bulk_string, 10) catch {
+                return .{ .response = "-ERR value is not an integer\r\n" };
+            };
+            const keys = try alloc.alloc([]const u8, items.len - 2);
+            for (items[1..items.len - 1], keys) |item, *key| key.* = item.bulk_string;
+            for (keys) |key| {
+                const popped = try store.lpop(alloc, key, 1) orelse continue;
+                const response = try std.fmt.allocPrint(
+                    alloc,
+                    "*2\r\n${d}\r\n{s}\r\n${d}\r\n{s}\r\n",
+                    .{ key.len, key, popped[0].len, popped[0] },
+                );
+                return .{ .response = response };
+            }
+            return .{ .block = .{ .keys = keys, .timeout_ms = timeout_s * 1000 } };
+        },
     }
 }
 
@@ -203,7 +257,11 @@ const TestCtx = struct {
         const alloc = self.arena.allocator();
         const resp_args = try alloc.alloc(RespValue, args.len);
         for (args, resp_args) |arg, *resp| resp.* = .{ .bulk_string = arg };
-        return handleCommand(alloc, &self.store, .{ .array = resp_args });
+        return switch (try handleCommand(alloc, &self.store, .{ .array = resp_args })) {
+            .response => |r| r,
+            .push => |p| p.response,
+            .block => error.UnexpectedBlock,
+        };
     }
 
     fn expect(self: *TestCtx, expected: []const u8, args: []const []const u8) !void {
