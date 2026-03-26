@@ -148,10 +148,11 @@ pub fn main() !void {
                     return err;
                 };
 
+                var w = client.conn.stream.writer(&.{});
                 switch (try protocol.handleCommand(command_alloc, &store, result.value)) {
-                    .response => |r| try client.conn.stream.writer(&.{}).interface.writeAll(r),
+                    .response => |r| try w.interface.writeAll(r),
                     .push => |p| {
-                        try client.conn.stream.writer(&.{}).interface.writeAll(p.response);
+                        try w.interface.writeAll(p.response);
                         try wakeBlocked(p.key, &store, &blocked, server_alloc, command_alloc);
                     },
                     .block => |b| {
