@@ -52,6 +52,8 @@ pub const Store = struct {
     alloc: std.mem.Allocator,
     pool: std.heap.MemoryPool(ListItem),
 
+    pub const KeyType = enum { string, list, none };
+
     pub fn init(alloc: std.mem.Allocator) Store {
         return .{
             .alloc = alloc,
@@ -183,6 +185,14 @@ pub const Store = struct {
             self.pool.destroy(item);
         }
         return result;
+    }
+
+    pub fn typeOf(self: *Store, key: []const u8) KeyType {
+        const entry = self.map.getPtr(key) orelse return .none;
+        return switch (entry.value) {
+            .string => .string,
+            .list => .list,
+        };
     }
 };
 

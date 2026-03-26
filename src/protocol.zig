@@ -45,6 +45,7 @@ const Command = enum {
     LLEN,
     LPOP,
     BLPOP,
+    TYPE,
 };
 
 const NULL_STRING = "$-1\r\n";
@@ -189,6 +190,15 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
                 return .{ .response = response };
             }
             return .{ .block = .{ .keys = keys, .timeout_ms = timeout_ms } };
+        },
+        .TYPE => {
+            if (items.len < 1) return .{ .response = "-ERR wrong number of arguments\r\n" };
+            const key = items[1].bulk_string;
+            return .{ .response = switch (store.typeOf(key)) {
+                .string => "+string\r\n",
+                .list => "+list\r\n",
+                .none => "+none\r\n",
+            }};
         },
     }
 }

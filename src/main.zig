@@ -133,7 +133,6 @@ pub fn main() !void {
                 const n = posix.read(pfd.fd, available_space) catch 0;
 
                 if (n == 0) {
-                    // Client disconnected
                     std.log.info("Client disconnected: fd {d}", .{pfd.fd});
                     if (clients.fetchRemove(pfd.fd)) |entry| { var e = entry; e.value.deinit(); }
                     if (blocked.fetchRemove(pfd.fd)) |entry| { var e = entry; e.value.deinit(server_alloc); }
