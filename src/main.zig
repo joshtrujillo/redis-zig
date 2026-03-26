@@ -133,8 +133,8 @@ pub fn main() !void {
                 if (n == 0) {
                     // Client disconnected
                     std.log.info("Client disconnected: fd {d}", .{pfd.fd});
-                    if (clients.fetchRemove(pfd.fd)) |entry| entry.value.deinit();
-                    if (blocked.fetchRemove(pfd.fd)) |entry| entry.value.deinit(server_alloc);
+                    if (clients.fetchRemove(pfd.fd)) |entry| { var e = entry; e.value.deinit(); }
+                    if (blocked.fetchRemove(pfd.fd)) |entry| { var e = entry; e.value.deinit(server_alloc); }
                     _ = poll_fds.swapRemove(i);
                     continue;
                 }
