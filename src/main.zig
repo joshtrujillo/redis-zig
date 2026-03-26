@@ -95,7 +95,7 @@ pub fn main() !void {
             var it = blocked.iterator();
             while (it.next()) |e| {
                 if (e.value_ptr.deadline) |dl|
-                if (now >= dl) try expired.append(e.key_ptr.*);
+                if (now >= dl) try expired.append(server_alloc, e.key_ptr.*);
             }
             for (expired.items) |fd| {
                 const entry = blocked.fetchRemove(fd).?;
