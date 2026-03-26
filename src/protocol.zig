@@ -264,6 +264,13 @@ const TestCtx = struct {
         };
     }
 
+    fn cmdAction(self: *TestCtx, args: []const []const u8) !Action {
+        const alloc = self.arena.allocator();
+        const resp_args = try alloc.alloc(RespValue, args.len);
+        for (args, resp_args) |arg, *resp| resp.* = .{ .bulk_string = arg };
+        return handleCommand(alloc, &self.store, .{ .array = resp_args });
+    }
+
     fn expect(self: *TestCtx, expected: []const u8, args: []const []const u8) !void {
         try std.testing.expectEqualStrings(expected, try self.cmd(args));
     }
@@ -407,6 +414,57 @@ test "handleCommand: LPOP returns null bulk string for non-existent list" {
     defer ctx.deinit();
     _ = try ctx.cmd(&.{ "LPOP", "list"});
     try ctx.expect("$-1\r\n", &.{ "LPOP", "list" });
+}
+
+test "handleCommand: BLPOP returns immediate response when list has data" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "RPUSH", "mylist", "hello" });
+    try ctx.expect("*2\r\n$6\r\nmylist\r\n$5\r\nhello\r\n", &.{ "BLPOP", "mylist", "0" });
+}
+
+test "handleCommand: BLPOP checks multiple keys in order" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "RPUSH", "b", "val" });
+    try ctx.expect("*2\r\n$1\r\nb\r\n$3\r\nval\r\n", &.{ "BLPOP", "a", "b", "0" });
+}
+
+test "handleCommand: BLPOP returns block action on empty list" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    const action = try ctx.cmdAction(&.{ "BLPOP", "mylist", "5" });
+    switch (action) {
+        .block => |b| {
+            try std.testing.expectEqual(@as(usize, 1), b.keys.len);
+            try std.testing.expectEqualStrings("mylist", b.keys[0]);
+            try std.testing.expectEqual(@as(u64, 5000), b.timeout_ms);
+        },
+        else => return error.WrongAction,
+    }
+}
+
+test "handleCommand: BLPOP timeout 0 means block forever" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    const action = try ctx.cmdAction(&.{ "BLPOP", "mylist", "0" });
+    switch (action) {
+        .block => |b| try std.testing.expectEqual(@as(u64, 0), b.timeout_ms),
+        else => return error.WrongAction,
+    }
+}
+
+test "handleCommand: RPUSH returns push action with correct key" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    const action = try ctx.cmdAction(&.{ "RPUSH", "mylist", "a" });
+    switch (action) {
+        .push => |p| {
+            try std.testing.expectEqualStrings("mylist", p.key);
+            try std.testing.expectEqualStrings(":1\r\n", p.response);
+        },
+        else => return error.WrongAction,
+    }
 }
 
 test "parse: returns error on incomplete data" {
