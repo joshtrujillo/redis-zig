@@ -172,9 +172,11 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
         },
         .BLPOP => {
             if (items.len < 3) return .{ .response = "-ERR wrong number of arguments\r\n" };
-            const timeout_s = std.fmt.parseInt(u64, items[items.len - 1].bulk_string, 10) catch {
-                return .{ .response = "-ERR value is not an integer\r\n" };
+            const timeout_s = std.fmt.parseFloat(f64, items[items.len - 1].bulk_string) catch {
+                return .{ .response = "-ERR timeout is not a float or out of range\r\n" };
             };
+            if (timeout_s < 0) return .{ .response = "-ERR timeout is negative\r\n" };
+            const timeout_ms: u64 = if (timeout_s == 0) 0 else @max(1, @as(u64, @intFromFloat(timeout_s * 1000)));
             const keys = try alloc.alloc([]const u8, items.len - 2);
             for (items[1..items.len - 1], keys) |item, *key| key.* = item.bulk_string;
             for (keys) |key| {
@@ -186,7 +188,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
                 );
                 return .{ .response = response };
             }
-            return .{ .block = .{ .keys = keys, .timeout_ms = timeout_s * 1000 } };
+            return .{ .block = .{ .keys = keys, .timeout_ms = timeout_ms } };
         },
     }
 }
