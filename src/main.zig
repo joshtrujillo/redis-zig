@@ -98,7 +98,7 @@ pub fn main() !void {
                 if (now >= dl) try expired.append(server_alloc, e.key_ptr.*);
             }
             for (expired.items) |fd| {
-                const entry = blocked.fetchRemove(fd).?;
+                var entry = blocked.fetchRemove(fd).?;
                 entry.value.deinit(server_alloc);
                 _ = posix.write(fd, "*-1\r\n") catch {};
             }
