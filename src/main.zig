@@ -88,7 +88,7 @@ pub fn main() !void {
             }
 
         }
-        _ = try posix.poll(poll_fds.items, -1);
+        _ = try posix.poll(poll_fds.items, poll_timeout);
         {
             const now = std.time.milliTimestamp();
             var expired: std.ArrayList(posix.socket_t) = .empty;
@@ -100,7 +100,9 @@ pub fn main() !void {
             for (expired.items) |fd| {
                 var entry = blocked.fetchRemove(fd).?;
                 entry.value.deinit(server_alloc);
-                _ = posix.write(fd, "*-1\r\n") catch {};
+                const stream = net.Stream{ .handle = fd };
+                var ew = stream.writer(&.{});
+                ew.interface.writeAll("*-1\r\n") catch {};
             }
         }
         defer _ = arena.reset(.retain_capacity);
@@ -196,7 +198,9 @@ fn wakeBlocked(
                 "*2\r\n${d}\r\n{s}\r\n${d}\r\n{s}\r\n",
                 .{ key.len, key, popped[0].len, popped[0] }
             );
-            _ = posix.write(fd, response) catch {};
+            const ws = net.Stream{ .handle = fd };
+            var ww = ws.writer(&.{});
+            ww.interface.writeAll(response) catch {};
             return; // FIFO
         }
     }
