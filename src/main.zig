@@ -91,7 +91,7 @@ pub fn main() !void {
         _ = try posix.poll(poll_fds.items, -1);
         {
             const now = std.time.milliTimestamp();
-            var expired: std.ArrayList(posix.socket_t) = .init(server_alloc);
+            var expired: std.ArrayList(posix.socket_t) = .empty;
             var it = blocked.iterator();
             while (it.next()) |e| {
                 if (e.value_ptr.deadline) |dl|
