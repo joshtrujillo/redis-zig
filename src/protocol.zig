@@ -197,6 +197,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
             return .{ .response = switch (store.typeOf(key)) {
                 .string => "+string\r\n",
                 .list => "+list\r\n",
+                .stream => "+stream\r\n",
                 .none => "+none\r\n",
             }};
         },
