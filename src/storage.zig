@@ -14,6 +14,10 @@ const Value = union(enum) {
 const RecordId = struct {
     ms: u64,
     sequence: u64,
+
+    fn isGreater(self: *RecordId, id: RecordId) bool {
+        return (self.ms > id.ms or (self.ms == id.ms and self.sequence > id.sequence));
+    }
 };
 
 const StreamRecord = struct {
@@ -245,11 +249,11 @@ pub const Store = struct {
         var it = std.mem.splitSequence(u8, id, "-");
         const ms = try std.fmt.parseInt(u64, it.next().?, 10);
         const seq = try std.fmt.parseInt(u64, it.next().?, 10);
-        try stream.entries.append(self.alloc,
-            .{
-                .id = .{ .ms = ms, .sequence = seq },
-                .fields = owned_fields
-            },
+        const recordId = RecordId{ .ms = ms, .sequence = seq };
+        if (!recordId.isGreater(stream.last_id)) return error.InvalidId;
+        try stream.entries.append(
+            self.alloc,
+            .{ .id = .{ .ms = ms, .sequence = seq }, .fields = owned_fields },
         );
         return id;
     }
