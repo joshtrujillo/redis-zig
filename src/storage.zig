@@ -234,31 +234,57 @@ pub const Store = struct {
         };
     }
 
-    pub fn xadd(self: *Store, key: []const u8, id: []const u8, args: [][]const u8) ![]const u8 {
+    pub fn xadd(
+        self: *Store,
+        dest_alloc: std.mem.Allocator,
+        key: []const u8,
+        id: []const u8,
+        args: [][]const u8,
+    ) ![]const u8 {
         const owned_key = try self.alloc.dupe(u8, key);
         const entry = try self.map.getOrPut(owned_key);
         if (!entry.found_existing) {
-            entry.value_ptr.* = .{ .value = .{ .stream = Stream.init() }, .expires_at = null };
+            entry.value_ptr.* = .{
+                .value = .{ .stream = Stream.init() },
+                .expires_at = null,
+            };
         } else if (entry.value_ptr.value != .stream) {
             return error.WrongType;
         }
         const stream = &entry.value_ptr.value.stream;
+
+        const recordId = try resolveId(id, stream.last_id);
+        if (recordId.ms == 0 and recordId.sequence == 0) return error.MinId;
+        if (!recordId.isGreater(stream.last_id)) return error.InvalidId;
+
         const owned_fields = try self.alloc.alloc([]const u8, args.len);
         for (args, owned_fields) |src, *dst| dst.* = try self.alloc.dupe(u8, src);
 
-        var it = std.mem.splitSequence(u8, id, "-");
-        const ms = try std.fmt.parseInt(u64, it.next().?, 10);
-        const seq = try std.fmt.parseInt(u64, it.next().?, 10);
-        const recordId = RecordId{ .ms = ms, .sequence = seq };
-        if (ms == 0 and seq == 0) return error.MinId;
-        if (!recordId.isGreater(stream.last_id)) return error.InvalidId;
-
         try stream.entries.append(
             self.alloc,
-            .{ .id = .{ .ms = ms, .sequence = seq }, .fields = owned_fields },
+            .{ .id = recordId, .fields = owned_fields },
         );
         stream.last_id = recordId;
-        return id;
+        return try std.fmt.allocPrint(
+            dest_alloc,
+            "{d}-{d}",
+            .{ recordId.ms, recordId.sequence },
+        );
+    }
+
+    fn resolveId(raw_id: []const u8, last_id: RecordId) !RecordId {
+        var it = std.mem.splitSequence(u8, raw_id, "-");
+        const ms_str = it.next().?;
+        const seq_str = it.next() orelse "*";
+
+        const ms: u64 = if (std.mem.eql(u8, ms_str, "*")) @intCast(std.time.milliTimestamp()) else try std.fmt.parseInt(u64, ms_str, 10);
+
+        const seq = if (std.mem.eql(u8, seq_str, "*"))
+            if (ms == last_id.ms) last_id.sequence + 1 else 0
+        else
+            try std.fmt.parseInt(u64, seq_str, 10);
+
+        return .{ .ms = ms, .sequence = seq };
     }
 };
 

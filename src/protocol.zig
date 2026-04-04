@@ -204,7 +204,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
             const id = items[2].bulk_string;
             const args = try alloc.alloc([]const u8, items.len - 3);
             for (items[3..], args) |item, *arg| arg.* = item.bulk_string;
-            const returned_id = store.xadd(key, id, args) catch |err| switch (err) {
+            const returned_id = store.xadd(alloc, key, id, args) catch |err| switch (err) {
                 error.InvalidId => return .{ .response = "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n"},
                 error.MinId => return .{ .response = "-ERR The ID specified in XADD must be greater than 0-0\r\n"},
                 else => return err,
