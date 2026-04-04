@@ -15,7 +15,7 @@ const RecordId = struct {
     ms: u64,
     sequence: u64,
 
-    fn isGreater(self: *RecordId, id: RecordId) bool {
+    fn isGreater(self: *const RecordId, id: RecordId) bool {
         return (self.ms > id.ms or (self.ms == id.ms and self.sequence > id.sequence));
     }
 };
