@@ -46,6 +46,7 @@ const Command = enum {
     LPOP,
     BLPOP,
     TYPE,
+    XADD,
 };
 
 const NULL_STRING = "$-1\r\n";
@@ -63,7 +64,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
     const command = std.meta.stringToEnum(Command, upper) orelse return .{ .response = "-ERR unknown command\r\n" };
 
     switch (command) {
-        .PING => return .{ .response = "+PONG\r\n"},
+        .PING => return .{ .response = "+PONG\r\n" },
         .ECHO => {
             if (items.len < 2) return .{ .response = "-ERR wrong number of arguments\r\n" };
             const arg = items[1].bulk_string;
@@ -106,7 +107,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
                 number_of_elements = try store.rpush(key, item.bulk_string);
             }
 
-            const response = try std.fmt.allocPrint(alloc, ":{d}\r\n", .{ number_of_elements });
+            const response = try std.fmt.allocPrint(alloc, ":{d}\r\n", .{number_of_elements});
             return .{ .push = .{ .response = response, .key = key } };
         },
         .LPUSH => {
@@ -117,7 +118,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
                 number_of_elements = try store.lpush(key, item.bulk_string);
             }
 
-            const response = try std.fmt.allocPrint(alloc, ":{d}\r\n", .{ number_of_elements });
+            const response = try std.fmt.allocPrint(alloc, ":{d}\r\n", .{number_of_elements});
             return .{ .push = .{ .response = response, .key = key } };
         },
         .LRANGE => {
@@ -142,7 +143,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
             if (items.len < 2) return .{ .response = "-ERR wrong number of arguments\r\n" };
             const key = items[1].bulk_string;
             const len = store.llen(key);
-            const response = try std.fmt.allocPrint(alloc, ":{d}\r\n", .{ len });
+            const response = try std.fmt.allocPrint(alloc, ":{d}\r\n", .{len});
             return .{ .response = response };
         },
         .LPOP => {
@@ -158,11 +159,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
                 return .{ .response = NULL_STRING };
             };
             if (count_arg == null) {
-                const response = try std.fmt.allocPrint(
-                    alloc,
-                    "${d}\r\n{s}\r\n",
-                    .{ popped[0].len, popped[0] }
-                );
+                const response = try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ popped[0].len, popped[0] });
                 return .{ .response = response };
             }
             var a: std.io.Writer.Allocating = .init(alloc);
@@ -179,7 +176,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
             if (timeout_s < 0) return .{ .response = "-ERR timeout is negative\r\n" };
             const timeout_ms: u64 = if (timeout_s == 0) 0 else @max(1, @as(u64, @intFromFloat(timeout_s * 1000)));
             const keys = try alloc.alloc([]const u8, items.len - 2);
-            for (items[1..items.len - 1], keys) |item, *key| key.* = item.bulk_string;
+            for (items[1 .. items.len - 1], keys) |item, *key| key.* = item.bulk_string;
             for (keys) |key| {
                 const popped = try store.lpop(alloc, key, 1) orelse continue;
                 const response = try std.fmt.allocPrint(
@@ -199,7 +196,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
                 .list => "+list\r\n",
                 .stream => "+stream\r\n",
                 .none => "+none\r\n",
-            }};
+            } };
         },
     }
 }
@@ -418,14 +415,14 @@ test "handleCommand: LPOP returns null bulk string for empty list" {
     var ctx = TestCtx.init();
     defer ctx.deinit();
     _ = try ctx.cmd(&.{ "RPUSH", "list", "one" });
-    _ = try ctx.cmd(&.{ "LPOP", "list"});
+    _ = try ctx.cmd(&.{ "LPOP", "list" });
     try ctx.expect("$-1\r\n", &.{ "LPOP", "list" });
 }
 
 test "handleCommand: LPOP returns null bulk string for non-existent list" {
     var ctx = TestCtx.init();
     defer ctx.deinit();
-    _ = try ctx.cmd(&.{ "LPOP", "list"});
+    _ = try ctx.cmd(&.{ "LPOP", "list" });
     try ctx.expect("$-1\r\n", &.{ "LPOP", "list" });
 }
 
