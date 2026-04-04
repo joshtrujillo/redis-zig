@@ -148,6 +148,7 @@ pub fn main() !void {
                     if (err == error.IncompleteCommand) { i += 1; continue; }
                     return err;
                 };
+                std.log.info("Client fd={d} sent command={s}", .{ pfd.fd, result.value.bulk_string });
 
                 var w = client.conn.stream.writer(&.{});
                 switch (try protocol.handleCommand(command_alloc, &store, result.value)) {
