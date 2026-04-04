@@ -255,6 +255,7 @@ pub const Store = struct {
             self.alloc,
             .{ .id = .{ .ms = ms, .sequence = seq }, .fields = owned_fields },
         );
+        stream.last_id = recordId;
         return id;
     }
 };
