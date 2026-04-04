@@ -18,12 +18,24 @@ const RecordId = struct {
 
 const StreamRecord = struct {
     id: RecordId,
-    fields: std.StringHashMap([]const u8),
+    fields: [][]const u8,
 };
 
 const Stream = struct {
     entries: std.ArrayList(StreamRecord),
     last_id: RecordId,
+
+    fn init() Stream {
+        return .{ .entries = .{}, .last_id = .{ .ms = 0, .sequence = 0 } };
+    }
+
+    fn deinit(self: *Stream, alloc: std.mem.Allocator) void {
+        for (self.entries.items) |record| {
+            for (record.fields) |f| alloc.free(f);
+            alloc.free(record.fields);
+        }
+        self.entries.deinit(alloc);
+    }
 };
 
 const ListItem = struct {
@@ -40,6 +52,16 @@ const List = struct {
         return .{ .alloc = alloc, .list = .{}, .len = 0 };
     }
 
+    fn deinit(self: *List) void {
+        var it = self.list.first;
+        while (it) |node| {
+            it = node.next;
+            const item: *ListItem = @fieldParentPtr("node", node);
+            self.alloc.free(item.data);
+            self.alloc.destroy(item);
+        }
+    }
+
     fn append(self: *List, data: []const u8) !void {
         const item = try self.alloc.create(ListItem);
         item.* = .{ .data = data };
@@ -52,16 +74,6 @@ const List = struct {
         item.* = .{ .data = data };
         self.list.prepend(&item.node);
         self.len += 1;
-    }
-
-    fn deinit(self: *List) void {
-        var it = self.list.first;
-        while (it) |node| {
-            it = node.next;
-            const item: *ListItem = @fieldParentPtr("node", node);
-            self.alloc.free(item.data);
-            self.alloc.destroy(item);
-        }
     }
 };
 
@@ -88,7 +100,7 @@ pub const Store = struct {
             switch (entry.value_ptr.*.value) {
                 .string => |s| self.alloc.free(s),
                 .list => |*list| list.deinit(),
-                .stream => {},
+                .stream => |*stream| stream.deinit(self.alloc),
             }
         }
         self.map.deinit();
@@ -104,7 +116,7 @@ pub const Store = struct {
         }
         return switch (entry.value) {
             .string => |s| s,
-            .list, .stream => return null,
+            else => return null,
         };
     }
 
@@ -123,7 +135,7 @@ pub const Store = struct {
                     try l.append(owned_value);
                     return l.len;
                 },
-                .string, .stream => return error.WrongType,
+                else => return error.WrongType,
             }
         } else {
             const owned_key = try self.alloc.dupe(u8, key);
@@ -143,7 +155,7 @@ pub const Store = struct {
                     try l.prepend(owned_value);
                     return l.len;
                 },
-                .string, .stream => return error.WrongType,
+                else => return error.WrongType,
             }
         } else {
             const owned_key = try self.alloc.dupe(u8, key);
@@ -157,8 +169,8 @@ pub const Store = struct {
     pub fn lrange(self: *Store, key: []const u8, start: i64, stop: i64) ?ListIterator {
         const entry = self.map.getPtr(key) orelse return null;
         const list = switch (entry.value) {
-            .string, .stream => return null,
             .list => |*l| l,
+            else => return null,
         };
         const list_len: i64 = @intCast(list.len);
 
@@ -183,16 +195,16 @@ pub const Store = struct {
     pub fn llen(self: *Store, key: []const u8) usize {
         const entry = self.map.getPtr(key) orelse return 0;
         return switch (entry.value) {
-            .string, .stream => 0,
             .list => |*l| l.len,
+            else => 0,
         };
     }
 
     pub fn lpop(self: *Store, dest_alloc: std.mem.Allocator, key: []const u8, count: usize) !?[][]const u8 {
         const entry = self.map.getPtr(key) orelse return null;
         const list = switch (entry.value) {
-            .string, .stream => return null,
             .list => |*l| l,
+            else => return null,
         };
         const actual = @min(count, list.len);
         if (actual == 0) return null;
@@ -216,6 +228,30 @@ pub const Store = struct {
             .list => .list,
             .stream => .stream,
         };
+    }
+
+    pub fn xadd(self: *Store, key: []const u8, id: []const u8, args: [][]const u8) ![]const u8 {
+        const owned_key = try self.alloc.dupe(u8, key);
+        const entry = try self.map.getOrPut(owned_key);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = .{ .value = .{ .stream = Stream.init() }, .expires_at = null };
+        } else if (entry.value_ptr.value != .stream) {
+            return error.WrongType;
+        }
+        const stream = &entry.value_ptr.value.stream;
+        const owned_fields = try self.alloc.alloc([]const u8, args.len);
+        for (args, owned_fields) |src, *dst| dst.* = try self.alloc.dupe(u8, src);
+
+        var it = std.mem.splitSequence(u8, id, "-");
+        const ms = try std.fmt.parseInt(u64, it.next().?, 10);
+        const seq = try std.fmt.parseInt(u64, it.next().?, 10);
+        try stream.entries.append(self.alloc,
+            .{
+                .id = .{ .ms = ms, .sequence = seq },
+                .fields = owned_fields
+            },
+        );
+        return id;
     }
 };
 

@@ -66,13 +66,13 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
     switch (command) {
         .PING => return .{ .response = "+PONG\r\n" },
         .ECHO => {
-            if (items.len < 2) return .{ .response = "-ERR wrong number of arguments\r\n" };
+            if (wrongArgs(items, 2)) |r| return r;
             const arg = items[1].bulk_string;
             const response = try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ arg.len, arg });
             return .{ .response = response };
         },
         .SET => {
-            if (items.len < 3) return .{ .response = "-ERR wrong number of arguments\r\n" };
+            if (wrongArgs(items, 3)) |r| return r;
             const key = items[1].bulk_string;
             const val = items[2].bulk_string;
             var expires_at: ?i64 = null;
@@ -93,14 +93,14 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
             return .{ .response = "+OK\r\n" };
         },
         .GET => {
-            if (items.len < 2) return .{ .response = "-ERR wrong number of arguments\r\n" };
+            if (wrongArgs(items, 2)) |r| return r;
             const key = items[1].bulk_string;
             const v = store.get(key) orelse return .{ .response = NULL_STRING };
             const response = try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ v.len, v });
             return .{ .response = response };
         },
         .RPUSH => {
-            if (items.len < 3) return .{ .response = "-ERR wrong number of arguments\r\n" };
+            if (wrongArgs(items, 3)) |r| return r;
             const key = items[1].bulk_string;
             var number_of_elements: usize = 0;
             for (items[2..]) |item| {
@@ -111,7 +111,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
             return .{ .push = .{ .response = response, .key = key } };
         },
         .LPUSH => {
-            if (items.len < 3) return .{ .response = "-ERR wrong number of arguments\r\n" };
+            if (wrongArgs(items, 3)) |r| return r;
             const key = items[1].bulk_string;
             var number_of_elements: usize = 0;
             for (items[2..]) |item| {
@@ -122,7 +122,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
             return .{ .push = .{ .response = response, .key = key } };
         },
         .LRANGE => {
-            if (items.len < 4) return .{ .response = "-ERR wrong number of arguments\r\n" };
+            if (wrongArgs(items, 4)) |r| return r;
             const key = items[1].bulk_string;
             const start = std.fmt.parseInt(i64, items[2].bulk_string, 10) catch {
                 return .{ .response = "-ERR value is not an integer\r\n" };
@@ -140,14 +140,14 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
             return .{ .response = try a.toOwnedSlice() };
         },
         .LLEN => {
-            if (items.len < 2) return .{ .response = "-ERR wrong number of arguments\r\n" };
+            if (wrongArgs(items, 2)) |r| return r;
             const key = items[1].bulk_string;
             const len = store.llen(key);
             const response = try std.fmt.allocPrint(alloc, ":{d}\r\n", .{len});
             return .{ .response = response };
         },
         .LPOP => {
-            if (items.len < 2) return .{ .response = "-ERR wrong number of arguments\r\n" };
+            if (wrongArgs(items, 2)) |r| return r;
             const key = items[1].bulk_string;
             const count_arg: ?usize = if (items.len > 2)
                 std.fmt.parseInt(usize, items[2].bulk_string, 10) catch {
@@ -169,7 +169,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
             return .{ .response = try a.toOwnedSlice() };
         },
         .BLPOP => {
-            if (items.len < 3) return .{ .response = "-ERR wrong number of arguments\r\n" };
+            if (wrongArgs(items, 3)) |r| return r;
             const timeout_s = std.fmt.parseFloat(f64, items[items.len - 1].bulk_string) catch {
                 return .{ .response = "-ERR timeout is not a float or out of range\r\n" };
             };
@@ -189,7 +189,7 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
             return .{ .block = .{ .keys = keys, .timeout_ms = timeout_ms } };
         },
         .TYPE => {
-            if (items.len < 1) return .{ .response = "-ERR wrong number of arguments\r\n" };
+            if (wrongArgs(items, 2)) |r| return r;
             const key = items[1].bulk_string;
             return .{ .response = switch (store.typeOf(key)) {
                 .string => "+string\r\n",
@@ -198,7 +198,26 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
                 .none => "+none\r\n",
             } };
         },
+        .XADD => {
+            if (wrongArgs(items, 4)) |r| return r;
+            const key = items[1].bulk_string;
+            const id = items[2].bulk_string;
+            const args = try alloc.alloc([]const u8, items.len - 3);
+            for (items[3..], args) |item, *arg| arg.* = item.bulk_string;
+            const returned_id = try store.xadd(key, id, args);
+            const response = try std.fmt.allocPrint(
+                alloc,
+                "${d}\r\n{s}\r\n",
+                .{ returned_id.len, returned_id }
+            );
+            return .{ .response = response };
+        },
     }
+}
+
+fn wrongArgs(items: []const RespValue, min: usize) ?Action {
+    if (items.len < min) return .{ .response = "-ERR wrong number of arguments\r\n" };
+    return null;
 }
 
 // Responsible for identifying the RESP command
