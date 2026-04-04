@@ -251,6 +251,8 @@ pub const Store = struct {
         const seq = try std.fmt.parseInt(u64, it.next().?, 10);
         const recordId = RecordId{ .ms = ms, .sequence = seq };
         if (!recordId.isGreater(stream.last_id)) return error.InvalidId;
+        if (ms == 0 and seq == 0) return error.MinId;
+
         try stream.entries.append(
             self.alloc,
             .{ .id = .{ .ms = ms, .sequence = seq }, .fields = owned_fields },
