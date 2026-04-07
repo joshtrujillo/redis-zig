@@ -105,6 +105,9 @@ pub fn main() !void {
                 ew.interface.writeAll("*-1\r\n") catch {};
             }
         }
+        // Reuse the same arena, but use a new allocator per command
+        // This works well for now, but will be problematic for more
+        // blocking/concurrent protocol additions
         defer _ = arena.reset(.retain_capacity);
         const command_alloc = arena.allocator();
 
@@ -152,9 +155,13 @@ pub fn main() !void {
 
                 var w = client.conn.stream.writer(&.{});
                 switch (try protocol.handleCommand(command_alloc, &store, result.value)) {
-                    .response => |r| try w.interface.writeAll(r),
+                    .response => |r| {
+                        const bytes = try protocol.serialize(command_alloc, &r);
+                        try w.interface.writeAll(bytes);
+                    },
                     .push => |p| {
-                        try w.interface.writeAll(p.response);
+                        const bytes = try protocol.serialize(command_alloc, &p.response);
+                        try w.interface.writeAll(bytes);
                         try wakeBlocked(p.key, &store, &blocked, server_alloc, command_alloc);
                     },
                     .block => |b| {
@@ -193,11 +200,11 @@ fn wakeBlocked(
             defer entry.value.deinit(server_alloc);
             
             const popped = try store.lpop(arena_alloc, key, 1) orelse return;
-            const response = try std.fmt.allocPrint(
-                arena_alloc,
-                "*2\r\n${d}\r\n{s}\r\n${d}\r\n{s}\r\n",
-                .{ key.len, key, popped[0].len, popped[0] }
-            );
+            const resp_items = try arena_alloc.alloc(protocol.RespValue, 2);
+            resp_items[0] = .{ .bulk_string = key };
+            resp_items[1] = .{ .bulk_string = popped[0] };
+            const resp = protocol.RespValue{ .array = resp_items };
+            const response = try protocol.serialize(arena_alloc, &resp);
             const ws = net.Stream{ .handle = fd };
             var ww = ws.writer(&.{});
             ww.interface.writeAll(response) catch {};

@@ -8,18 +8,18 @@ pub const BlockInfo = struct {
     timeout_ms: u64, // 0 is block forever
 };
 
-pub const PushAction = struct {
-    response: []const u8,
+pub const PushInfo = struct {
+    response: RespValue,
     key: []const u8, // key that was pushed to
 };
 
 pub const Action = union(enum) {
-    response: []const u8,
+    response: RespValue,
     block: BlockInfo,
-    push: PushAction,
+    push: PushInfo,
 };
 
-const RespValue = union(enum) {
+pub const RespValue = union(enum) {
     simple_string: []const u8,
     bulk_string: []const u8,
     integer: i64,
@@ -47,32 +47,34 @@ const Command = enum {
     BLPOP,
     TYPE,
     XADD,
+    XRANGE,
 };
 
-const NULL_STRING = "$-1\r\n";
-
 // Handles the action taken for each RESP command
-// returns the direct RESP reply to be written to the client's socket
-pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: RespValue) !Action {
+// returns the Action containing RespValue to be serialized at write boundary
+pub fn handleCommand(
+    alloc: std.mem.Allocator,
+    store: *storage.Store,
+    value: RespValue,
+) !Action {
     const items = switch (value) {
         .array => |arr| arr,
-        else => return .{ .response = "-ERR empty array\r\n" },
+        else => return .{ .response = .{ .error_msg = "empty array" } },
     };
 
     const cmd = items[0].bulk_string;
     const upper = try std.ascii.allocUpperString(alloc, cmd);
-    const command = std.meta.stringToEnum(Command, upper) orelse return .{ .response = "-ERR unknown command\r\n" };
+    const command = std.meta.stringToEnum(Command, upper) orelse return .{ .response = .{ .error_msg = "unknown command" } };
 
     switch (command) {
-        .PING => return .{ .response = "+PONG\r\n" },
+        .PING => return .{ .response = .{ .simple_string = "PONG" } },
         .ECHO => {
             if (wrongArgs(items, 2)) |r| return r;
-            const arg = items[1].bulk_string;
-            const response = try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ arg.len, arg });
-            return .{ .response = response };
+            return .{ .response = items[1] };
         },
         .SET => {
             if (wrongArgs(items, 3)) |r| return r;
+
             const key = items[1].bulk_string;
             const val = items[2].bulk_string;
             var expires_at: ?i64 = null;
@@ -90,137 +92,139 @@ pub fn handleCommand(alloc: std.mem.Allocator, store: *storage.Store, value: Res
             }
 
             try store.set(key, val, expires_at);
-            return .{ .response = "+OK\r\n" };
+            return .{ .response = .{ .simple_string = "OK" } };
         },
         .GET => {
             if (wrongArgs(items, 2)) |r| return r;
+
             const key = items[1].bulk_string;
-            const v = store.get(key) orelse return .{ .response = NULL_STRING };
-            const response = try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ v.len, v });
-            return .{ .response = response };
+            const v = store.get(key) orelse return .{ .response = .{ .null_value = {} } };
+            return .{ .response = .{ .bulk_string = v } };
         },
-        .RPUSH => {
+        .LPUSH, .RPUSH => |c| {
             if (wrongArgs(items, 3)) |r| return r;
+
             const key = items[1].bulk_string;
             var number_of_elements: usize = 0;
             for (items[2..]) |item| {
-                number_of_elements = try store.rpush(key, item.bulk_string);
+                number_of_elements = if (c == .LPUSH)
+                    try store.lpush(key, item.bulk_string)
+                else
+                    try store.rpush(key, item.bulk_string);
             }
 
-            const response = try std.fmt.allocPrint(alloc, ":{d}\r\n", .{number_of_elements});
-            return .{ .push = .{ .response = response, .key = key } };
-        },
-        .LPUSH => {
-            if (wrongArgs(items, 3)) |r| return r;
-            const key = items[1].bulk_string;
-            var number_of_elements: usize = 0;
-            for (items[2..]) |item| {
-                number_of_elements = try store.lpush(key, item.bulk_string);
-            }
-
-            const response = try std.fmt.allocPrint(alloc, ":{d}\r\n", .{number_of_elements});
-            return .{ .push = .{ .response = response, .key = key } };
+            return .{ .push = .{ .response = .{ .integer = @intCast(number_of_elements) }, .key = key } };
         },
         .LRANGE => {
             if (wrongArgs(items, 4)) |r| return r;
+
             const key = items[1].bulk_string;
             const start = std.fmt.parseInt(i64, items[2].bulk_string, 10) catch {
-                return .{ .response = "-ERR value is not an integer\r\n" };
+                return .{ .response = .{ .error_msg = "value is not an integer" } };
             };
             const stop = std.fmt.parseInt(i64, items[3].bulk_string, 10) catch {
-                return .{ .response = "-ERR value is not an integer\r\n" };
+                return .{ .response = .{ .error_msg = "value is not an integer" } };
             };
-            var iter = store.lrange(key, start, stop) orelse {
-                return .{ .response = "*0\r\n" };
+            const items_slice = try store.lrange(alloc, key, start, stop) orelse {
+                const empty = try alloc.alloc(RespValue, 0);
+                return .{ .response = .{ .array = empty } };
             };
-            var a: std.io.Writer.Allocating = .init(alloc);
-            const w = &a.writer;
-            try w.print("*{d}\r\n", .{iter.count});
-            while (iter.next()) |item| try w.print("${d}\r\n{s}\r\n", .{ item.len, item });
-            return .{ .response = try a.toOwnedSlice() };
+            const arr = try alloc.alloc(RespValue, items_slice.len);
+            for (items_slice, arr) |item, *resp| resp.* = .{ .bulk_string = item };
+            return .{ .response = .{ .array = arr } };
         },
         .LLEN => {
             if (wrongArgs(items, 2)) |r| return r;
+
             const key = items[1].bulk_string;
             const len = store.llen(key);
-            const response = try std.fmt.allocPrint(alloc, ":{d}\r\n", .{len});
-            return .{ .response = response };
+            return .{ .response = .{ .integer = @intCast(len) } };
         },
         .LPOP => {
             if (wrongArgs(items, 2)) |r| return r;
+
             const key = items[1].bulk_string;
             const count_arg: ?usize = if (items.len > 2)
                 std.fmt.parseInt(usize, items[2].bulk_string, 10) catch {
-                    return .{ .response = "-ERR value is not an integer\r\n" };
+                    return .{ .response = .{ .error_msg = "value is not an integer" } };
                 }
             else
                 null;
             const popped = try store.lpop(alloc, key, count_arg orelse 1) orelse {
-                return .{ .response = NULL_STRING };
+                return .{ .response = .{ .null_value = {} } };
             };
             if (count_arg == null) {
-                const response = try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ popped[0].len, popped[0] });
-                return .{ .response = response };
+                return .{ .response = .{ .bulk_string = popped[0] } };
             }
-            var a: std.io.Writer.Allocating = .init(alloc);
-            const w = &a.writer;
-            try w.print("*{d}\r\n", .{popped.len});
-            for (popped) |item| try w.print("${d}\r\n{s}\r\n", .{ item.len, item });
-            return .{ .response = try a.toOwnedSlice() };
+            const arr = try alloc.alloc(RespValue, popped.len);
+            for (popped, arr) |item, *resp| resp.* = .{ .bulk_string = item };
+            return .{ .response = .{ .array = arr } };
         },
         .BLPOP => {
             if (wrongArgs(items, 3)) |r| return r;
+
             const timeout_s = std.fmt.parseFloat(f64, items[items.len - 1].bulk_string) catch {
-                return .{ .response = "-ERR timeout is not a float or out of range\r\n" };
+                return .{ .response = .{ .error_msg = "timeout is not a float or out of range" } };
             };
-            if (timeout_s < 0) return .{ .response = "-ERR timeout is negative\r\n" };
+            if (timeout_s < 0) return .{ .response = .{ .error_msg = "timeout is negative" } };
             const timeout_ms: u64 = if (timeout_s == 0) 0 else @max(1, @as(u64, @intFromFloat(timeout_s * 1000)));
             const keys = try alloc.alloc([]const u8, items.len - 2);
             for (items[1 .. items.len - 1], keys) |item, *key| key.* = item.bulk_string;
             for (keys) |key| {
                 const popped = try store.lpop(alloc, key, 1) orelse continue;
-                const response = try std.fmt.allocPrint(
-                    alloc,
-                    "*2\r\n${d}\r\n{s}\r\n${d}\r\n{s}\r\n",
-                    .{ key.len, key, popped[0].len, popped[0] },
-                );
-                return .{ .response = response };
+                const resp_items = try alloc.alloc(RespValue, 2);
+                resp_items[0] = .{ .bulk_string = key };
+                resp_items[1] = .{ .bulk_string = popped[0] };
+                return .{ .response = .{ .array = resp_items } };
             }
             return .{ .block = .{ .keys = keys, .timeout_ms = timeout_ms } };
         },
         .TYPE => {
             if (wrongArgs(items, 2)) |r| return r;
+
             const key = items[1].bulk_string;
-            return .{ .response = switch (store.typeOf(key)) {
-                .string => "+string\r\n",
-                .list => "+list\r\n",
-                .stream => "+stream\r\n",
-                .none => "+none\r\n",
-            } };
+            return .{ .response = .{ .simple_string = switch (store.typeOf(key)) {
+                .string => "string",
+                .list => "list",
+                .stream => "stream",
+                .none => "none",
+            } } };
         },
         .XADD => {
             if (wrongArgs(items, 4)) |r| return r;
+
             const key = items[1].bulk_string;
             const id = items[2].bulk_string;
             const args = try alloc.alloc([]const u8, items.len - 3);
             for (items[3..], args) |item, *arg| arg.* = item.bulk_string;
-            const returned_id = store.xadd(alloc, key, id, args) catch |err| switch (err) {
-                error.InvalidId => return .{ .response = "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n"},
-                error.MinId => return .{ .response = "-ERR The ID specified in XADD must be greater than 0-0\r\n"},
+            const returned_id = store.xadd(key, id, args) catch |err| switch (err) {
+                error.InvalidId => return .{ .response = .{ .error_msg = "The ID specified in XADD is equal or smaller than the target stream top item" } },
+                error.MinId => return .{ .response = .{ .error_msg = "The ID specified in XADD must be greater than 0-0" } },
                 else => return err,
             };
-            const response = try std.fmt.allocPrint(
+            const id_str = try std.fmt.allocPrint(
                 alloc,
-                "${d}\r\n{s}\r\n",
-                .{ returned_id.len, returned_id }
+                "{d}-{d}",
+                .{ returned_id.ms, returned_id.sequence },
             );
-            return .{ .response = response };
+            return .{ .response = .{ .bulk_string = id_str } };
+        },
+        .XRANGE => {
+            if (wrongArgs(items, 4)) |r| return r;
+
+            const key = items[1].bulk_string;
+            const startId = items[2].bulk_string;
+            const endId = items[3].bulk_string;
+            _ = store.xrange(key, startId, endId);
+            const empty = try alloc.alloc(RespValue, 0);
+            return .{ .response = .{ .array = empty } };
         },
     }
 }
 
 fn wrongArgs(items: []const RespValue, min: usize) ?Action {
-    if (items.len < min) return .{ .response = "-ERR wrong number of arguments\r\n" };
+    if (items.len < min) return .{ .response = .{ .error_msg = "wrong number of arguments" } };
+
     return null;
 }
 
@@ -268,6 +272,31 @@ pub fn parse(alloc: std.mem.Allocator, data: []const u8) !ParseResult {
     }
 }
 
+pub fn serialize(alloc: std.mem.Allocator, resp_value: *const RespValue) ![]const u8 {
+    switch (resp_value.*) {
+        .null_value => return "$-1\r\n",
+        .bulk_string => |s| {
+            return try std.fmt.allocPrint(alloc, "${d}\r\n{s}\r\n", .{ s.len, s });
+        },
+        .simple_string => |s| {
+            return try std.fmt.allocPrint(alloc, "+{s}\r\n", .{s});
+        },
+        .integer => |d| {
+            return try std.fmt.allocPrint(alloc, ":{d}\r\n", .{d});
+        },
+        .array => |arr| {
+            var a: std.io.Writer.Allocating = .init(alloc);
+            const w = &a.writer;
+            try w.print("*{d}\r\n", .{arr.len});
+            for (arr) |*e| try w.print("{s}", .{try serialize(alloc, e)});
+            return try a.toOwnedSlice();
+        },
+        .error_msg => |e| {
+            return try std.fmt.allocPrint(alloc, "-ERR {s}\r\n", .{e});
+        },
+    }
+}
+
 // Tests
 
 const TestCtx = struct {
@@ -290,11 +319,13 @@ const TestCtx = struct {
         const alloc = self.arena.allocator();
         const resp_args = try alloc.alloc(RespValue, args.len);
         for (args, resp_args) |arg, *resp| resp.* = .{ .bulk_string = arg };
-        return switch (try handleCommand(alloc, &self.store, .{ .array = resp_args })) {
+        const action = try handleCommand(alloc, &self.store, .{ .array = resp_args });
+        const resp = switch (action) {
             .response => |r| r,
             .push => |p| p.response,
-            .block => error.UnexpectedBlock,
+            .block => return error.UnexpectedBlock,
         };
+        return serialize(alloc, &resp);
     }
 
     fn cmdAction(self: *TestCtx, args: []const []const u8) !Action {
@@ -494,7 +525,8 @@ test "handleCommand: RPUSH returns push action with correct key" {
     switch (action) {
         .push => |p| {
             try std.testing.expectEqualStrings("mylist", p.key);
-            try std.testing.expectEqualStrings(":1\r\n", p.response);
+            const serialized = try serialize(ctx.arena.allocator(), &p.response);
+            try std.testing.expectEqualStrings(":1\r\n", serialized);
         },
         else => return error.WrongAction,
     }
@@ -526,6 +558,53 @@ test "parse: PING as RESP array" {
         },
         else => return error.WrongVariant,
     }
+}
+
+test "handleCommand: XADD creates stream and returns id" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    try ctx.expect("$3\r\n1-0\r\n", &.{ "XADD", "mystream", "1-0", "key", "value" });
+}
+
+test "handleCommand: XADD auto-sequences within same ms" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "XADD", "mystream", "1-0", "a", "1" });
+    try ctx.expect("$3\r\n1-1\r\n", &.{ "XADD", "mystream", "1-*", "b", "2" });
+}
+
+test "handleCommand: XADD rejects id equal or smaller than last" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "XADD", "mystream", "2-0", "a", "1" });
+    try ctx.expect("-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n", &.{ "XADD", "mystream", "1-0", "b", "2" });
+}
+
+test "handleCommand: XADD rejects 0-0" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    try ctx.expect("-ERR The ID specified in XADD must be greater than 0-0\r\n", &.{ "XADD", "mystream", "0-0", "a", "1" });
+}
+
+test "handleCommand: XADD multiple entries" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "XADD", "s", "1-0", "a", "1" });
+    _ = try ctx.cmd(&.{ "XADD", "s", "2-0", "b", "2" });
+    try ctx.expect("$3\r\n3-0\r\n", &.{ "XADD", "s", "3-0", "c", "3" });
+}
+
+test "handleCommand: XRANGE returns empty for non-existent key" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    try ctx.expect("*0\r\n", &.{ "XRANGE", "nostream", "0", "99" });
+}
+
+test "handleCommand: TYPE returns stream for stream key" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "XADD", "mystream", "1-0", "k", "v" });
+    try ctx.expect("+stream\r\n", &.{ "TYPE", "mystream" });
 }
 
 test "parse: ECHO as RESP array" {
