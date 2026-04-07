@@ -215,9 +215,21 @@ pub fn handleCommand(
             const key = items[1].bulk_string;
             const startId = items[2].bulk_string;
             const endId = items[3].bulk_string;
-            _ = store.xrange(key, startId, endId);
-            const empty = try alloc.alloc(RespValue, 0);
-            return .{ .response = .{ .array = empty } };
+            const range_slice = store.xrange(key, startId, endId) orelse {
+                return .{ .response = .{ .array = try alloc.alloc(RespValue, 0) } };
+            };
+            const range_array = try alloc.alloc(RespValue, range_slice.len);
+            for (range_slice, range_array) |record, *resp| {
+                const id_str = try std.fmt.allocPrint(alloc, "{d}-{d}", .{ record.id.ms, record.id.sequence });
+                const fields = try alloc.alloc(RespValue, record.fields.len);
+                for (record.fields, fields) |f, *r| r.* = .{ .bulk_string = f };
+                
+                const entry_arr = try alloc.alloc(RespValue, 2);
+                entry_arr[0] = .{ .bulk_string = id_str };
+                entry_arr[1] = .{ .array = fields };
+                resp.* = .{ .array = entry_arr };
+            }
+            return .{ .response = .{ .array = range_array } };
         },
     }
 }
