@@ -234,8 +234,10 @@ pub const Store = struct {
         };
         const items = stream.entries.items;
         const start_id = RecordId.parseId(start_id_raw) catch return null;
-        const end_id = RecordId.parseId(end_id_raw) catch return null;
         const lower = std.sort.lowerBound(StreamRecord, items, start_id, compareRecordId);
+        const end_id = RecordId.parseId(end_id_raw) catch return null;
+        const max_int = std.math.maxInt(u64);
+        if (end_id.sequence == max_int and end_id.ms == max_int) return items[lower..];
         const upper = std.sort.lowerBound(StreamRecord, items, end_id, compareRecordId);
         return items[lower..upper+1];
     }
