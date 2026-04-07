@@ -237,7 +237,7 @@ pub const Store = struct {
         const end_id = RecordId.parseId(end_id_raw) catch return null;
         const lower = std.sort.lowerBound(StreamRecord, items, start_id, compareRecordId);
         const upper = std.sort.lowerBound(StreamRecord, items, end_id, compareRecordId);
-        return items[lower..upper];
+        return items[lower..upper+1];
     }
 
     fn resolveId(raw_id: []const u8, last_id: RecordId) !RecordId {
