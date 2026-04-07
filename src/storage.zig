@@ -233,8 +233,8 @@ pub const Store = struct {
             else => return null,
         };
         const items = stream.entries.items;
-        const start_id = RecordId.parseId(start_id_raw);
-        const end_id = RecordId.parseId(end_id_raw);
+        const start_id = RecordId.parseId(start_id_raw) catch return null;
+        const end_id = RecordId.parseId(end_id_raw) catch return null;
         const lower = std.sort.lowerBound(StreamRecord, items, start_id, compareRecordId);
         const upper = std.sort.lowerBound(StreamRecord, items, end_id, compareRecordId);
         return items[lower..upper];
@@ -265,8 +265,8 @@ pub const RecordId = struct {
         const ms_str = it.next() orelse return error.InvalidId;
         const seq_str = it.next() orelse return error.InvalidId;
         return .{
-            .ms = std.fmt.parseInt(u64, ms_str, 10),
-            .sequence = std.fmt.parseInt(u64, seq_str, 10),
+            .ms = try std.fmt.parseInt(u64, ms_str, 10),
+            .sequence = try std.fmt.parseInt(u64, seq_str, 10),
         };
     }
 
