@@ -261,6 +261,8 @@ pub const RecordId = struct {
     sequence: u64,
 
     pub fn parseId(raw_id: []const u8) !RecordId {
+        if (std.mem.eql(u8, raw_id, "-")) return .{ .ms = 0, .sequence = 0 }
+        else if (std.mem.eql(u8, raw_id, "+")) return .{ .ms = std.math.maxInt(u64), .sequence = std.math.maxInt(u64) };
         var it = std.mem.splitSequence(u8, raw_id, "-");
         const ms_str = it.next() orelse return error.InvalidId;
         const seq_str = it.next() orelse return error.InvalidId;
