@@ -86,7 +86,6 @@ pub fn main() !void {
                     if (poll_timeout == -1 or ms < poll_timeout) poll_timeout = ms;
                 }
             }
-
         }
         _ = try posix.poll(poll_fds.items, poll_timeout);
         {
@@ -95,7 +94,7 @@ pub fn main() !void {
             var it = blocked.iterator();
             while (it.next()) |e| {
                 if (e.value_ptr.deadline) |dl|
-                if (now >= dl) try expired.append(server_alloc, e.key_ptr.*);
+                    if (now >= dl) try expired.append(server_alloc, e.key_ptr.*);
             }
             for (expired.items) |fd| {
                 var entry = blocked.fetchRemove(fd).?;
@@ -137,8 +136,14 @@ pub fn main() !void {
 
                 if (n == 0) {
                     std.log.info("Client disconnected: fd {d}", .{pfd.fd});
-                    if (clients.fetchRemove(pfd.fd)) |entry| { var e = entry; e.value.deinit(); }
-                    if (blocked.fetchRemove(pfd.fd)) |entry| { var e = entry; e.value.deinit(server_alloc); }
+                    if (clients.fetchRemove(pfd.fd)) |entry| {
+                        var e = entry;
+                        e.value.deinit();
+                    }
+                    if (blocked.fetchRemove(pfd.fd)) |entry| {
+                        var e = entry;
+                        e.value.deinit(server_alloc);
+                    }
                     _ = poll_fds.swapRemove(i);
                     continue;
                 }
@@ -148,7 +153,10 @@ pub fn main() !void {
                 const current_data = client.buf[0..client.buf_len];
 
                 const result = protocol.parse(command_alloc, current_data) catch |err| {
-                    if (err == error.IncompleteCommand) { i += 1; continue; }
+                    if (err == error.IncompleteCommand) {
+                        i += 1;
+                        continue;
+                    }
                     return err;
                 };
                 std.log.info("Client fd={d} sent command={s}", .{ pfd.fd, result.value.array[0].bulk_string });
@@ -167,8 +175,7 @@ pub fn main() !void {
                     .block => |b| {
                         const keys = try server_alloc.alloc([]const u8, b.keys.len);
                         for (b.keys, keys) |src, *dst| dst.* = try server_alloc.dupe(u8, src);
-                        const deadline: ?i64 = if (b.timeout_ms == 0) null
-                            else std.time.milliTimestamp() + @as(i64, @intCast(b.timeout_ms));
+                        const deadline: ?i64 = if (b.timeout_ms == 0) null else std.time.milliTimestamp() + @as(i64, @intCast(b.timeout_ms));
                         try blocked.put(pfd.fd, .{ .keys = keys, .deadline = deadline });
                     },
                 }
@@ -198,7 +205,7 @@ fn wakeBlocked(
             const fd = e.key_ptr.*;
             var entry = blocked.fetchRemove(fd).?;
             defer entry.value.deinit(server_alloc);
-            
+
             const popped = try store.lpop(arena_alloc, key, 1) orelse return;
             const resp_items = try arena_alloc.alloc(protocol.RespValue, 2);
             resp_items[0] = .{ .bulk_string = key };

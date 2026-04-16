@@ -113,7 +113,13 @@ pub const Store = struct {
         }
     }
 
-    pub fn lrange(self: *Store, dest_alloc: std.mem.Allocator, key: []const u8, start: i64, stop: i64) !?[][]const u8 {
+    pub fn lrange(
+        self: *Store,
+        dest_alloc: std.mem.Allocator,
+        key: []const u8,
+        start: i64,
+        stop: i64,
+    ) !?[][]const u8 {
         const entry = self.map.getPtr(key) orelse return null;
         const list = switch (entry.value) {
             .list => |*l| l,
@@ -206,48 +212,60 @@ pub const Store = struct {
         }
         const stream = &entry.value_ptr.value.stream;
 
-        const recordId = try resolveId(id, stream.last_id);
-        if (recordId.ms == 0 and recordId.sequence == 0) return error.MinId;
-        if (!(recordId.order(stream.last_id) == .gt)) return error.InvalidId;
+        const record_id = try resolveId(id, stream.last_id);
+        if (record_id.ms == 0 and record_id.sequence == 0) return error.MinId;
+        if (!(record_id.order(stream.last_id) == .gt)) return error.InvalidId;
 
         const owned_fields = try self.alloc.alloc([]const u8, args.len);
         for (args, owned_fields) |src, *dst| dst.* = try self.alloc.dupe(u8, src);
 
         try stream.entries.append(
             self.alloc,
-            .{ .id = recordId, .fields = owned_fields },
+            .{ .id = record_id, .fields = owned_fields },
         );
-        stream.last_id = recordId;
-        return recordId;
+        stream.last_id = record_id;
+        return record_id;
     }
 
-    pub fn xrange(
+    pub fn streamQuery(
         self: *Store,
         key: []const u8,
         start_id_raw: []const u8,
         end_id_raw: []const u8,
+        exclusive_start: bool,
     ) ?[]const StreamRecord {
         const entry = self.map.getPtr(key) orelse return null;
-        const stream = switch (entry.value) {
-            .stream => |*s| s,
+        const items = switch (entry.value) {
+            .stream => |*s| s.entries.items,
             else => return null,
         };
-        const items = stream.entries.items;
         const start_id = RecordId.parseId(start_id_raw) catch return null;
-        const lower = std.sort.lowerBound(StreamRecord, items, start_id, compareRecordId);
+        const lower = getLowerBound(items, start_id, exclusive_start);
         const end_id = RecordId.parseId(end_id_raw) catch return null;
         const max_int = std.math.maxInt(u64);
         if (end_id.sequence == max_int and end_id.ms == max_int) return items[lower..];
         const upper = std.sort.lowerBound(StreamRecord, items, end_id, compareRecordId);
-        return items[lower..upper+1];
+        return items[lower .. upper + 1];
     }
+    
+    fn getLowerBound(items: []StreamRecord, start_id: RecordId, exclusive_start: bool) usize {
+        const lower_bound = std.sort.lowerBound(StreamRecord, items, start_id, compareRecordId);
+        if (exclusive_start and (items[lower_bound].id.order(start_id) == .eq)) {
+            return lower_bound + 1;
+        } else {
+            return lower_bound;
+        }
+    } 
 
     fn resolveId(raw_id: []const u8, last_id: RecordId) !RecordId {
         var it = std.mem.splitSequence(u8, raw_id, "-");
         const ms_str = it.next().?;
         const seq_str = it.next() orelse "*";
 
-        const ms: u64 = if (std.mem.eql(u8, ms_str, "*")) @intCast(std.time.milliTimestamp()) else try std.fmt.parseInt(u64, ms_str, 10);
+        const ms: u64 = if (std.mem.eql(u8, ms_str, "*"))
+            @intCast(std.time.milliTimestamp())
+        else
+            try std.fmt.parseInt(u64, ms_str, 10);
 
         const seq = if (std.mem.eql(u8, seq_str, "*"))
             if (ms == last_id.ms) last_id.sequence + 1 else 0
@@ -263,8 +281,13 @@ pub const RecordId = struct {
     sequence: u64,
 
     pub fn parseId(raw_id: []const u8) !RecordId {
-        if (std.mem.eql(u8, raw_id, "-")) return .{ .ms = 0, .sequence = 0 }
-        else if (std.mem.eql(u8, raw_id, "+")) return .{ .ms = std.math.maxInt(u64), .sequence = std.math.maxInt(u64) };
+        if (std.mem.eql(u8, raw_id, "-"))
+            return .{ .ms = 0, .sequence = 0 }
+        else if (std.mem.eql(u8, raw_id, "+"))
+            return .{
+                .ms = std.math.maxInt(u64),
+                .sequence = std.math.maxInt(u64),
+            };
         var it = std.mem.splitSequence(u8, raw_id, "-");
         const ms_str = it.next() orelse return error.InvalidId;
         const seq_str = it.next() orelse return error.InvalidId;

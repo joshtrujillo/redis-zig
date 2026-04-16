@@ -48,6 +48,7 @@ const Command = enum {
     TYPE,
     XADD,
     XRANGE,
+    XREAD,
 };
 
 // Handles the action taken for each RESP command
@@ -213,25 +214,53 @@ pub fn handleCommand(
             if (wrongArgs(items, 4)) |r| return r;
 
             const key = items[1].bulk_string;
-            const startId = items[2].bulk_string;
-            const endId = items[3].bulk_string;
-            const range_slice = store.xrange(key, startId, endId) orelse {
+            const start_id = items[2].bulk_string;
+            const end_id = items[3].bulk_string;
+            const range_slice = store.streamQuery(key, start_id, end_id, false) orelse {
                 return .{ .response = .{ .array = try alloc.alloc(RespValue, 0) } };
             };
-            const range_array = try alloc.alloc(RespValue, range_slice.len);
-            for (range_slice, range_array) |record, *resp| {
-                const id_str = try std.fmt.allocPrint(alloc, "{d}-{d}", .{ record.id.ms, record.id.sequence });
-                const fields = try alloc.alloc(RespValue, record.fields.len);
-                for (record.fields, fields) |f, *r| r.* = .{ .bulk_string = f };
-                
-                const entry_arr = try alloc.alloc(RespValue, 2);
-                entry_arr[0] = .{ .bulk_string = id_str };
-                entry_arr[1] = .{ .array = fields };
-                resp.* = .{ .array = entry_arr };
-            }
+            const range_array = try assembleStreamResp(alloc, range_slice);
             return .{ .response = .{ .array = range_array } };
         },
+        .XREAD => {
+            if (wrongArgs(items, 3)) |r| return r;
+
+            // multiple streams are passed in as a list of keys and a 
+            // corresponding list of entry IDs for each stream
+            // XREAD STREAMS <key1> <key2> ... <id1> <id2> ...
+            const args = try alloc.alloc([]const u8, items.len - 1);
+            for (items[2..], args) |item, *arg| arg.* = item.bulk_string;
+            const mid = args.len / 2;
+            // Zip stream keys and entry IDs together
+            var response: std.ArrayList(RespValue) = .{};
+            for (args[0..mid], args[mid..]) |key_str, id_str| {
+                const range_slice = store.streamQuery(key_str, id_str, "+", true) orelse { return .{ .response = .{ .array = try alloc.alloc(RespValue, 0) } };
+                };
+                const range_array = try assembleStreamResp(alloc, range_slice);
+                const key_entry = try alloc.alloc(RespValue, 2);
+                key_entry[0] = .{ .bulk_string = key_str };
+                key_entry[1] = .{ .array = range_array };
+                try response.append(alloc, .{ .array = key_entry });
+            }
+            return .{ .response = .{ .array = try response.toOwnedSlice(alloc) } };
+        }
     }
+}
+
+// 
+fn assembleStreamResp(alloc: std.mem.Allocator, stream_slice: []const storage.StreamRecord) ![]RespValue {
+    const result = try alloc.alloc(RespValue, stream_slice.len);
+    for (stream_slice, result) |record, *resp| {
+        const id_str = try std.fmt.allocPrint(alloc, "{d}-{d}", .{ record.id.ms, record.id.sequence });
+        const fields = try alloc.alloc(RespValue, record.fields.len);
+        for (record.fields, fields) |f, *r| r.* = .{ .bulk_string = f };
+
+        const entry_arr = try alloc.alloc(RespValue, 2);
+        entry_arr[0] = .{ .bulk_string = id_str };
+        entry_arr[1] = .{ .array = fields };
+        resp.* = .{ .array = entry_arr };
+    }
+    return result;
 }
 
 fn wrongArgs(items: []const RespValue, min: usize) ?Action {
