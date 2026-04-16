@@ -228,7 +228,7 @@ pub fn handleCommand(
             // multiple streams are passed in as a list of keys and a 
             // corresponding list of entry IDs for each stream
             // XREAD STREAMS <key1> <key2> ... <id1> <id2> ...
-            const args = try alloc.alloc([]const u8, items.len - 1);
+            const args = try alloc.alloc([]const u8, items.len - 2);
             for (items[2..], args) |item, *arg| arg.* = item.bulk_string;
             const mid = args.len / 2;
             // Zip stream keys and entry IDs together
