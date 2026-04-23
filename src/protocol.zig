@@ -4,19 +4,25 @@ const std = @import("std");
 const storage = @import("storage.zig");
 
 pub const BlockInfo = struct {
-    keys: [][]const u8,
     timeout_ms: u64, // 0 is block forever
+    keys: [][]const u8,
+    operation: BlockedOp,
 };
 
-pub const PushInfo = struct {
+pub const BlockedOp = union(enum) {
+    blpop: void,
+    xread: struct { ids: [][]const u8 }, // the start IDs per key
+};
+
+pub const WakeInfo = struct {
+    key: []const u8,
     response: RespValue,
-    key: []const u8, // key that was pushed to
 };
 
 pub const Action = union(enum) {
-    response: RespValue,
     block: BlockInfo,
-    push: PushInfo,
+    wake: WakeInfo,
+    response: RespValue,
 };
 
 pub const RespValue = union(enum) {
@@ -26,6 +32,12 @@ pub const RespValue = union(enum) {
     array: []RespValue,
     null_value,
     error_msg: []const u8,
+
+    pub fn bulkStringArray(alloc: std.mem.Allocator, strings: []const []const u8) ![]RespValue {
+        const arr = try alloc.alloc(RespValue, strings.len);
+        for (strings, arr) |s, *r| r.* = .{ .bulk_string = s };
+        return arr;
+    }
 };
 
 const ParseResult = struct {
@@ -120,7 +132,10 @@ pub fn handleCommand(
                     try store.push(key, item.bulk_string, .right);
             }
 
-            return .{ .push = .{ .response = .{ .integer = @intCast(number_of_elements) }, .key = key } };
+            return .{ .wake = .{
+                .response = .{ .integer = @intCast(number_of_elements) },
+                .key = key,
+            } };
         },
         .LRANGE => {
             if (wrongArgs(items, 4)) |r| return r;
@@ -136,7 +151,7 @@ pub fn handleCommand(
                 const empty = try arena.alloc(RespValue, 0);
                 return .{ .response = .{ .array = empty } };
             };
-            const arr = try bulkStringArray(arena, items_slice);
+            const arr = try RespValue.bulkStringArray(arena, items_slice);
             return .{ .response = .{ .array = arr } };
         },
         .LLEN => {
@@ -162,7 +177,7 @@ pub fn handleCommand(
             if (count_arg == null) {
                 return .{ .response = .{ .bulk_string = popped[0] } };
             }
-            const arr = try bulkStringArray(arena, popped);
+            const arr = try RespValue.bulkStringArray(arena, popped);
             return .{ .response = .{ .array = arr } };
         },
         .BLPOP => {
@@ -182,7 +197,7 @@ pub fn handleCommand(
                 resp_items[1] = .{ .bulk_string = popped[0] };
                 return .{ .response = .{ .array = resp_items } };
             }
-            return .{ .block = .{ .keys = keys, .timeout_ms = timeout_ms } };
+            return .{ .block = .{ .keys = keys, .timeout_ms = timeout_ms, .operation = .{ .blpop = {} } } };
         },
         .TYPE => {
             if (wrongArgs(items, 2)) |r| return r;
@@ -208,7 +223,10 @@ pub fn handleCommand(
                 else => return err,
             };
             const id_str = try returned_id.toStr(arena);
-            return .{ .response = .{ .bulk_string = id_str } };
+            return .{ .wake = .{
+                .response = .{ .bulk_string = id_str },
+                .key = key,
+            } };
         },
         .XRANGE => {
             if (wrongArgs(items, 4)) |r| return r;
@@ -228,28 +246,63 @@ pub fn handleCommand(
             // multiple streams are passed in as a list of keys and a
             // corresponding list of entry IDs for each stream
             // XREAD STREAMS <key1> <key2> ... <id1> <id2> ...
-            const args = try arena.alloc([]const u8, items.len - 2);
-            for (items[2..], args) |item, *arg| arg.* = item.bulk_string;
-            const mid = args.len / 2;
+
+            var idx: usize = 1;
+            var block_ms: ?u64 = null;
+
+            while (idx < items.len) {
+                const arg = items[idx].bulk_string;
+                if (std.ascii.eqlIgnoreCase(arg, "BLOCK")) {
+                    idx += 1;
+                    block_ms = std.fmt.parseInt(u64, items[idx].bulk_string, 10) catch
+                        return .{ .response = .{ .error_msg = "timeout is not an integer" } };
+                    idx += 1;
+                } else if (std.ascii.eqlIgnoreCase(arg, "STREAMS")) {
+                    idx += 1;
+                    break;
+                } else {
+                    idx += 1;
+                }
+            }
+
+            const rest = items[idx..];
+            const mid = rest.len / 2;
+            const keys = try arena.alloc([]const u8, mid);
+            const ids = try arena.alloc([]const u8, mid);
+            for (rest[0..mid], keys) |item, *k| k.* = item.bulk_string;
+            for (rest[mid..], ids) |item, *id| id.* = item.bulk_string;
+
+            // Query all streams
+            var response: std.ArrayList(RespValue) = .empty;
+            var has_results = false;
             // Zip stream keys and entry IDs together
-            var response: std.ArrayList(RespValue) = .{};
-            for (args[0..mid], args[mid..]) |key_str, id_str| {
-                const range_slice = store.streamQuery(key_str, id_str, "+", true) orelse {
-                    return .{ .response = .{ .array = try arena.alloc(RespValue, 0) } };
-                };
+            for (keys, ids) |key_str, id_str| {
+                const range_slice = store.streamQuery(key_str, id_str, "+", true) orelse continue;
+                has_results = true;
                 const range_array = try assembleStreamResp(arena, range_slice);
                 const key_entry = try arena.alloc(RespValue, 2);
                 key_entry[0] = .{ .bulk_string = key_str };
                 key_entry[1] = .{ .array = range_array };
                 try response.append(arena, .{ .array = key_entry });
             }
-            return .{ .response = .{ .array = try response.toOwnedSlice(arena) } };
+
+            if (has_results) {
+                return .{ .response = .{ .array = try response.toOwnedSlice(arena) } };
+            }
+
+            if (block_ms) |timeout_ms| {
+                return .{ .block = .{
+                    .keys = keys,
+                    .timeout_ms = timeout_ms,
+                    .operation = .{ .xread = .{ .ids = ids } },
+                } };
+            }
+            return .{ .response = .{ .null_value = {} } };
         },
     }
 }
 
-//
-fn assembleStreamResp(alloc: std.mem.Allocator, stream_slice: []const storage.StreamRecord) ![]RespValue {
+pub fn assembleStreamResp(alloc: std.mem.Allocator, stream_slice: []const storage.StreamRecord) ![]RespValue {
     const result = try alloc.alloc(RespValue, stream_slice.len);
     for (stream_slice, result) |record, *resp| {
         const id_str = try record.id.toStr(alloc);
@@ -262,18 +315,6 @@ fn assembleStreamResp(alloc: std.mem.Allocator, stream_slice: []const storage.St
         resp.* = .{ .array = entry_arr };
     }
     return result;
-}
-
-fn bulkStringArray(alloc: std.mem.Allocator, strings: []const []const u8) ![]RespValue {
-    const arr = try alloc.alloc(RespValue, strings.len);
-    for (strings, arr) |s, *r| r.* = .{ .bulk_string = s };
-    return arr;
-}
-
-fn wrongArgs(items: []const RespValue, min: usize) ?Action {
-    if (items.len < min) return .{ .response = .{ .error_msg = "wrong number of arguments" } };
-
-    return null;
 }
 
 // Responsible for identifying the RESP command
@@ -332,6 +373,12 @@ pub fn serialize(w: *std.io.Writer, resp_value: *const RespValue) !void {
         },
         .error_msg => |e| try w.print("-ERR {s}\r\n", .{e}),
     }
+}
+
+fn wrongArgs(items: []const RespValue, min: usize) ?Action {
+    if (items.len < min) return .{ .response = .{ .error_msg = "wrong number of arguments" } };
+
+    return null;
 }
 
 // Tests

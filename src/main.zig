@@ -15,20 +15,23 @@ const Client = struct {
 };
 
 const BlockedClient = struct {
-    deadline: ?i64,
+    deadline_ms: ?i64,
     keys: [][]const u8,
-    operation: BlockedOp = .{ .blpop = {} },
+    operation: protocol.BlockedOp = .{ .blpop = {} },
 
     fn deinit(self: *BlockedClient, alloc: std.mem.Allocator) void {
         for (self.keys) |k| alloc.free(k);
         alloc.free(self.keys);
+        switch (self.operation) {
+            .xread => |x| {
+                for (x.ids) |id| alloc.free(id);
+                alloc.free(x.ids);
+            },
+            .blpop => {},
+        }
     }
 };
 
-const BlockedOp = union(enum) {
-    blpop: void,
-    xread: struct { ids: [][]const u8 }, // the start IDs per key
-};
 
 pub fn main() !void {
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
@@ -80,9 +83,6 @@ pub fn main() !void {
 
         try expireBlockedClients(server_alloc, &blocked);
 
-        // Reuse the same arena, but use a new allocator per command
-        // This works well for now, but will be problematic for more
-        // blocking/concurrent protocol additions
         defer _ = arena.reset(.retain_capacity);
 
         // Check for new connections
@@ -90,7 +90,6 @@ pub fn main() !void {
             try acceptConnection(server_alloc, &server, &clients, &poll_fds);
         }
 
-        // Check Clients
         try handleClientData(server_alloc, &arena, &store, &clients, &blocked, &poll_fds);
     }
 }
@@ -103,7 +102,7 @@ fn computePollTimeout(blocked: *std.AutoHashMap(posix.socket_t, BlockedClient)) 
     const now = std.time.milliTimestamp();
     var it = blocked.iterator();
     while (it.next()) |e| {
-        if (e.value_ptr.deadline) |dl| {
+        if (e.value_ptr.deadline_ms) |dl| {
             // Clamp to [0, maxInt(i32)] to avoid negative/overflow values
             const ms: i32 = @intCast(@max(0, @min(dl - now, std.math.maxInt(i32))));
             if (poll_timeout_ms == -1 or ms < poll_timeout_ms) poll_timeout_ms = ms;
@@ -117,13 +116,13 @@ fn computePollTimeout(blocked: *std.AutoHashMap(posix.socket_t, BlockedClient)) 
 // Collect expired fds first, then remove them — can't modify the
 // hashmap while iterating it.
 fn expireBlockedClients(server_alloc: std.mem.Allocator, blocked: *std.AutoHashMap(posix.socket_t, BlockedClient),) !void {
-    const now = std.time.milliTimestamp();
+    const now_ms = std.time.milliTimestamp();
     var expired: std.ArrayList(posix.socket_t) = .empty;
     defer expired.deinit(server_alloc);
     var it = blocked.iterator();
     while (it.next()) |e| {
-        if (e.value_ptr.deadline) |dl|
-        if (now >= dl) try expired.append(server_alloc, e.key_ptr.*);
+        if (e.value_ptr.deadline_ms) |dl_ms|
+            if (now_ms >= dl_ms) try expired.append(server_alloc, e.key_ptr.*);
     }
     // Send a null array response to each timed-out client
     for (expired.items) |fd| {
@@ -191,15 +190,24 @@ fn handleClientData(server_alloc: std.mem.Allocator, arena: *std.heap.ArenaAlloc
                 .response => |r| {
                     try protocol.serialize(&w.interface, &r);
                 },
-                .push => |p| {
-                    try protocol.serialize(&w.interface, &p.response);
-                    try wakeBlocked(p.key, store, blocked, server_alloc, command_arena);
+                .wake => |r| {
+                    try protocol.serialize(&w.interface, &r.response);
+                    try wakeBlocked(r.key, store, blocked, server_alloc, command_arena);
                 },
                 .block => |b| {
                     const keys = try server_alloc.alloc([]const u8, b.keys.len);
+                    const operation: protocol.BlockedOp = switch (b.operation) {
+                        .blpop => .{ .blpop = {} },
+                        .xread => |x| blk: {
+                            const ids = try server_alloc.alloc([]const u8, x.ids.len);
+                            for (x.ids, ids) |src, *dst| dst.* = try server_alloc.dupe(u8, src);
+                            break :blk .{ .xread = .{ .ids = ids } };
+                        },
+                    };
+
                     for (b.keys, keys) |src, *dst| dst.* = try server_alloc.dupe(u8, src);
-                    const deadline: ?i64 = if (b.timeout_ms == 0) null else std.time.milliTimestamp() + @as(i64, @intCast(b.timeout_ms));
-                    try blocked.put(pfd.fd, .{ .keys = keys, .deadline = deadline });
+                    const deadline_ms: ?i64 = if (b.timeout_ms == 0) null else std.time.milliTimestamp() + @as(i64, @intCast(b.timeout_ms));
+                    try blocked.put(pfd.fd, .{ .keys = keys, .deadline_ms = deadline_ms, .operation = operation});
                 },
             }
 
@@ -213,13 +221,14 @@ fn handleClientData(server_alloc: std.mem.Allocator, arena: *std.heap.ArenaAlloc
 }
 
 fn wakeBlocked(
-key: []const u8,
-store: *storage.Store,
+    key: []const u8,
+    store: *storage.Store,
     blocked: *std.AutoHashMap(posix.socket_t, BlockedClient),
     server_alloc: std.mem.Allocator,
     command_arena: std.mem.Allocator,
 ) !void {
     var it = blocked.iterator();
+
     while (it.next()) |e| {
         for (e.value_ptr.keys) |k| {
             if (!std.mem.eql(u8, k, key)) continue;
@@ -228,11 +237,30 @@ store: *storage.Store,
             var entry = blocked.fetchRemove(fd).?;
             defer entry.value.deinit(server_alloc);
 
-            const popped = try store.lpop(command_arena, key, 1) orelse return;
-            const resp_items = try command_arena.alloc(protocol.RespValue, 2);
-            resp_items[0] = .{ .bulk_string = key };
-            resp_items[1] = .{ .bulk_string = popped[0] };
-            const resp = protocol.RespValue{ .array = resp_items };
+            const resp = switch (entry.value.operation) {
+                .blpop => blk: {
+                    const popped = try store.lpop(command_arena, key, 1) orelse return;
+                    const resp_items = try command_arena.alloc(protocol.RespValue, 2);
+                    resp_items[0] = .{ .bulk_string = key };
+                    resp_items[1] = .{ .bulk_string = popped[0] };
+                    break :blk protocol.RespValue{ .array = resp_items };
+                },
+                .xread => |r| blk: {
+                    var response: std.ArrayList(protocol.RespValue) = .empty;
+                    var has_results = false;
+                    for (entry.value.keys, r.ids) |key_str, id_str| {
+                        const range_slice = store.streamQuery(key_str, id_str, "+", true) orelse continue;
+                        has_results = true; 
+                        const range_array = try protocol.assembleStreamResp(command_arena, range_slice);
+                        const key_entry = try command_arena.alloc(protocol.RespValue, 2);
+                        key_entry[0] = .{ .bulk_string = key_str };
+                        key_entry[1] = .{ .array = range_array };
+                        try response.append(command_arena, .{ .array = key_entry });
+                    }
+                    break :blk protocol.RespValue{ .array = try response.toOwnedSlice(command_arena) }; 
+                },
+            };
+
             const s = net.Stream{ .handle = fd };
             var w = s.writer(&.{});
             try protocol.serialize(&w.interface, &resp);
