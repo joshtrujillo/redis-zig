@@ -141,6 +141,7 @@ fn handleClientData(server_alloc: std.mem.Allocator, arena: *std.heap.ArenaAlloc
                 },
                 .wake => |r| {
                     try protocol.serialize(&w.interface, &r.response);
+                    std.log.info("wake: key={s} blocked_count={d}", .{ r.key, blocked.count() });
                     if (try server.resolveWake(r.key, store, blocked, server_alloc, command_arena)) |wake| {
                         const s = net.Stream{ .handle = wake.fd };
                         var ww = s.writer(&.{});
