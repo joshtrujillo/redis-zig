@@ -91,6 +91,7 @@ pub fn resolveWake(
                     for (entry.value.keys, r.ids) |key_str, id_str| {
                         std.log.info("resolveWake xread: key={s} id={s}", .{ key_str, id_str });
                         const range_slice = store.streamQuery(key_str, id_str, "+", true) orelse continue;
+                        if (range_slice.len == 0) continue;
                         const range_array = try protocol.assembleStreamResp(arena, range_slice);
                         const key_entry = try arena.alloc(protocol.RespValue, 2);
                         // Dupe key_str into arena since entry.value.deinit will free the originals

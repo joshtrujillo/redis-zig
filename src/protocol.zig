@@ -278,6 +278,7 @@ pub fn handleCommand(
             // Zip stream keys and entry IDs together
             for (keys, ids) |key_str, id_str| {
                 const range_slice = store.streamQuery(key_str, id_str, "+", true) orelse continue;
+                if (range_slice.len == 0) continue;
                 has_results = true;
                 const range_array = try assembleStreamResp(arena, range_slice);
                 const key_entry = try arena.alloc(RespValue, 2);
@@ -734,6 +735,17 @@ test "handleCommand: XREAD exclusive start skips exact id match" {
     const result = try ctx.cmd(&.{ "XREAD", "STREAMS", "s1", "1-0" });
     try std.testing.expect(std.mem.indexOf(u8, result, "2-0") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "1-0\r\n") == null);
+}
+
+test "handleCommand: XREAD with BLOCK blocks when only matching entry is the start id" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "XADD", "s1", "0-1", "k", "v" });
+    const action = try ctx.cmdAction(&.{ "XREAD", "BLOCK", "1000", "STREAMS", "s1", "0-1" });
+    switch (action) {
+        .block => {},
+        else => return error.WrongAction,
+    }
 }
 
 test "handleCommand: XREAD with BLOCK returns block action when no data" {
