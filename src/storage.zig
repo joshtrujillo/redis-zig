@@ -1,114 +1,90 @@
 const std = @import("std");
 
-// Main storage struct that utilizes a []const u8 -> Entry hash map.
-// The methods for Store implement the RESP commands, and are responsible
-// for dealing with the actual storage of the data in memory.
+pub const Side = enum { left, right };
+
+// Main storage struct that uses two maps:
+// - values: maps keys to their Value (string, list, or stream)
+// - expiry: maps keys to their expiration timestamp (only for keys with TTL)
+// The expiry map borrows key pointers from the values map.
 pub const Store = struct {
-    map: std.StringHashMap(Entry),
-    alloc: std.mem.Allocator,
+    values: std.StringHashMap(Value),
+    expiry: std.StringHashMap(i64),
+    store_alloc: std.mem.Allocator,
 
     pub const KeyType = enum { string, list, stream, none };
 
     pub fn init(alloc: std.mem.Allocator) Store {
         return .{
-            .alloc = alloc,
-            .map = std.StringHashMap(Entry).init(alloc),
+            .store_alloc = alloc,
+            .values = std.StringHashMap(Value).init(alloc),
+            .expiry = std.StringHashMap(i64).init(alloc),
         };
     }
 
     pub fn deinit(self: *Store) void {
-        var it = self.map.iterator();
+        var it = self.values.iterator();
         while (it.next()) |entry| {
-            self.alloc.free(entry.key_ptr.*);
-            switch (entry.value_ptr.*.value) {
-                .string => |s| self.alloc.free(s),
-                .list => |*list| list.deinit(),
-                .stream => |*stream| stream.deinit(self.alloc),
-            }
+            self.freeValue(entry.value_ptr);
+            self.store_alloc.free(entry.key_ptr.*);
         }
-        self.map.deinit();
+        self.values.deinit();
+        self.expiry.deinit();
     }
 
-    // GET - get the value at the given key
-    // returns null if key does not exist or expired
     pub fn get(self: *Store, key: []const u8) ?[]const u8 {
-        const entry = self.map.getPtr(key) orelse return null;
-        if (entry.expires_at) |exp| {
-            if (std.time.milliTimestamp() >= exp) {
-                _ = self.map.remove(key);
-                return null;
-            }
-        }
-        return switch (entry.value) {
+        if (self.isExpired(key)) self.remove(key);
+        const value = self.values.getPtr(key) orelse return null;
+        return switch (value.*) {
             .string => |s| s,
-            else => return null,
+            else => null,
         };
     }
 
-    // SET - set the given value at the given key. Optionally set expires_at.
     pub fn set(
         self: *Store,
         key: []const u8,
         value: []const u8,
         expires_at: ?i64,
     ) !void {
-        const owned_key = try self.alloc.dupe(u8, key);
-        const owned_value = try self.alloc.dupe(u8, value);
-        try self.map.put(
-            owned_key,
-            .{ .value = .{ .string = owned_value }, .expires_at = expires_at },
-        );
-    }
-
-    // RPUSH - push a value on the right side of a list at given key
-    pub fn rpush(self: *Store, key: []const u8, value: []const u8) !usize {
-        const owned_value = try self.alloc.dupe(u8, value);
-
-        if (self.map.getPtr(key)) |entry| {
-            switch (entry.value) {
-                .list => |*l| {
-                    try l.append(owned_value);
-                    return l.len;
-                },
-                else => {
-                    self.alloc.free(owned_value);
-                    return error.WrongType;
-                },
-            }
+        const record = try self.values.getOrPut(key);
+        if (record.found_existing) {
+            self.freeValue(record.value_ptr);
         } else {
-            const owned_key = try self.alloc.dupe(u8, key);
-            var list = List.init(self.alloc);
-            try list.append(owned_value);
-            try self.map.put(
-                owned_key,
-                .{ .value = .{ .list = list }, .expires_at = null },
-            );
-            return 1;
+            record.key_ptr.* = try self.store_alloc.dupe(u8, key);
+        }
+        record.value_ptr.* = .{ .string = try self.store_alloc.dupe(u8, value) };
+
+        if (expires_at) |exp| {
+            try self.expiry.put(record.key_ptr.*, exp);
+        } else {
+            _ = self.expiry.remove(key);
         }
     }
 
-    pub fn lpush(self: *Store, key: []const u8, value: []const u8) !usize {
-        const owned_value = try self.alloc.dupe(u8, value);
+    pub fn push(
+        self: *Store,
+        key: []const u8,
+        value: []const u8,
+        side: Side,
+    ) !usize {
+        const owned_value = try self.store_alloc.dupe(u8, value);
 
-        if (self.map.getPtr(key)) |entry| {
-            switch (entry.value) {
+        if (self.values.getPtr(key)) |v| {
+            switch (v.*) {
                 .list => |*l| {
-                    try l.prepend(owned_value);
+                    try l.insert(owned_value, side);
                     return l.len;
                 },
                 else => {
-                    self.alloc.free(owned_value);
+                    self.store_alloc.free(owned_value);
                     return error.WrongType;
                 },
             }
         } else {
-            const owned_key = try self.alloc.dupe(u8, key);
-            var list = List.init(self.alloc);
-            try list.prepend(owned_value);
-            try self.map.put(
-                owned_key,
-                .{ .value = .{ .list = list }, .expires_at = null },
-            );
+            const owned_key = try self.store_alloc.dupe(u8, key);
+            var list = List.init(self.store_alloc);
+            try list.insert(owned_value, side);
+            try self.values.put(owned_key, .{ .list = list });
             return 1;
         }
     }
@@ -120,11 +96,7 @@ pub const Store = struct {
         start: i64,
         stop: i64,
     ) !?[][]const u8 {
-        const entry = self.map.getPtr(key) orelse return null;
-        const list = switch (entry.value) {
-            .list => |*l| l,
-            else => return null,
-        };
+        const list = self.getList(key) orelse return null;
         const list_len: i64 = @intCast(list.len);
 
         var norm_start: i64 = if (start < 0) list_len + start else start;
@@ -152,11 +124,7 @@ pub const Store = struct {
     }
 
     pub fn llen(self: *Store, key: []const u8) usize {
-        const entry = self.map.getPtr(key) orelse return 0;
-        return switch (entry.value) {
-            .list => |*l| l.len,
-            else => 0,
-        };
+        return (self.getList(key) orelse return 0).len;
     }
 
     pub fn lpop(
@@ -165,11 +133,7 @@ pub const Store = struct {
         key: []const u8,
         count: usize,
     ) !?[][]const u8 {
-        const entry = self.map.getPtr(key) orelse return null;
-        const list = switch (entry.value) {
-            .list => |*l| l,
-            else => return null,
-        };
+        const list = self.getList(key) orelse return null;
         const actual = @min(count, list.len);
         if (actual == 0) return null;
 
@@ -179,19 +143,15 @@ pub const Store = struct {
             list.len -= 1;
             const item: *ListItem = @fieldParentPtr("node", node);
             slot.* = try dest_alloc.dupe(u8, item.data);
-            self.alloc.free(item.data);
-            self.alloc.destroy(item);
+            self.store_alloc.free(item.data);
+            self.store_alloc.destroy(item);
         }
         return result;
     }
 
     pub fn typeOf(self: *Store, key: []const u8) KeyType {
-        const entry = self.map.getPtr(key) orelse return .none;
-        return switch (entry.value) {
-            .string => .string,
-            .list => .list,
-            .stream => .stream,
-        };
+        const value = self.values.getPtr(key) orelse return .none;
+        return std.meta.stringToEnum(KeyType, @tagName(value.*)) orelse .none;
     }
 
     pub fn xadd(
@@ -200,27 +160,24 @@ pub const Store = struct {
         id: []const u8,
         args: [][]const u8,
     ) !RecordId {
-        const entry = try self.map.getOrPut(key);
+        const entry = try self.values.getOrPut(key);
         if (!entry.found_existing) {
-            entry.key_ptr.* = try self.alloc.dupe(u8, key);
-            entry.value_ptr.* = .{
-                .value = .{ .stream = Stream.init() },
-                .expires_at = null,
-            };
-        } else if (entry.value_ptr.value != .stream) {
+            entry.key_ptr.* = try self.store_alloc.dupe(u8, key);
+            entry.value_ptr.* = .{ .stream = Stream.init() };
+        } else if (entry.value_ptr.* != .stream) {
             return error.WrongType;
         }
-        const stream = &entry.value_ptr.value.stream;
+        const stream = &entry.value_ptr.stream;
 
         const record_id = try resolveId(id, stream.last_id);
         if (record_id.ms == 0 and record_id.sequence == 0) return error.MinId;
         if (!(record_id.order(stream.last_id) == .gt)) return error.InvalidId;
 
-        const owned_fields = try self.alloc.alloc([]const u8, args.len);
-        for (args, owned_fields) |src, *dst| dst.* = try self.alloc.dupe(u8, src);
+        const owned_fields = try self.store_alloc.alloc([]const u8, args.len);
+        for (args, owned_fields) |src, *dst| dst.* = try self.store_alloc.dupe(u8, src);
 
         try stream.entries.append(
-            self.alloc,
+            self.store_alloc,
             .{ .id = record_id, .fields = owned_fields },
         );
         stream.last_id = record_id;
@@ -234,11 +191,8 @@ pub const Store = struct {
         end_id_raw: []const u8,
         exclusive_start: bool,
     ) ?[]const StreamRecord {
-        const entry = self.map.getPtr(key) orelse return null;
-        const items = switch (entry.value) {
-            .stream => |*s| s.entries.items,
-            else => return null,
-        };
+        const stream = self.getStream(key) orelse return null;
+        const items = stream.entries.items;
         const start_id = RecordId.parseId(start_id_raw) catch return null;
         const lower = getLowerBound(items, start_id, exclusive_start);
         const end_id = RecordId.parseId(end_id_raw) catch return null;
@@ -247,7 +201,7 @@ pub const Store = struct {
         const upper = std.sort.lowerBound(StreamRecord, items, end_id, compareRecordId);
         return items[lower .. upper + 1];
     }
-    
+
     fn getLowerBound(items: []StreamRecord, start_id: RecordId, exclusive_start: bool) usize {
         const lower_bound = std.sort.lowerBound(StreamRecord, items, start_id, compareRecordId);
         if (exclusive_start and (items[lower_bound].id.order(start_id) == .eq)) {
@@ -255,7 +209,7 @@ pub const Store = struct {
         } else {
             return lower_bound;
         }
-    } 
+    }
 
     fn resolveId(raw_id: []const u8, last_id: RecordId) !RecordId {
         var it = std.mem.splitSequence(u8, raw_id, "-");
@@ -273,6 +227,45 @@ pub const Store = struct {
             try std.fmt.parseInt(u64, seq_str, 10);
 
         return .{ .ms = ms, .sequence = seq };
+    }
+
+    fn getList(self: *Store, key: []const u8) ?*List {
+        const value = self.values.getPtr(key) orelse return null;
+        return switch (value.*) {
+            .list => |*l| l,
+            else => null,
+        };
+    }
+
+    fn getStream(self: *Store, key: []const u8) ?*Stream {
+        const value = self.values.getPtr(key) orelse return null;
+        return switch (value.*) {
+            .stream => |*s| s,
+            else => null,
+        };
+    }
+
+    fn isExpired(self: *Store, key: []const u8) bool {
+        const exp = self.expiry.get(key) orelse return false;
+        return std.time.milliTimestamp() >= exp;
+    }
+
+    // Removes a key from both maps, freeing the owned key and value.
+    fn remove(self: *Store, key: []const u8) void {
+        _ = self.expiry.remove(key);
+        if (self.values.fetchRemove(key)) |kv| {
+            var v = kv.value;
+            self.freeValue(&v);
+            self.store_alloc.free(kv.key);
+        }
+    }
+
+    fn freeValue(self: *Store, value: *Value) void {
+        switch (value.*) {
+            .string => |s| self.store_alloc.free(s),
+            .list => |*l| l.deinit(),
+            .stream => |*s| s.deinit(self.store_alloc),
+        }
     }
 };
 
@@ -297,6 +290,10 @@ pub const RecordId = struct {
         };
     }
 
+    pub fn toStr(self: RecordId, alloc: std.mem.Allocator) ![]const u8 {
+        return try std.fmt.allocPrint(alloc, "{d}-{d}", .{ self.ms, self.sequence });
+    }
+
     fn order(self: RecordId, other: RecordId) std.math.Order {
         if (self.ms != other.ms) return std.math.order(self.ms, other.ms);
         return std.math.order(self.sequence, other.sequence);
@@ -311,11 +308,6 @@ pub const StreamRecord = struct {
 fn compareRecordId(target: RecordId, record: StreamRecord) std.math.Order {
     return target.order(record.id);
 }
-
-const Entry = struct {
-    value: Value,
-    expires_at: ?i64, // null is no expiry
-};
 
 const Value = union(enum) {
     string: []const u8,
@@ -364,17 +356,13 @@ const List = struct {
         }
     }
 
-    fn append(self: *List, data: []const u8) !void {
+    fn insert(self: *List, data: []const u8, side: Side) !void {
         const item = try self.alloc.create(ListItem);
         item.* = .{ .data = data };
-        self.list.append(&item.node);
-        self.len += 1;
-    }
-
-    fn prepend(self: *List, data: []const u8) !void {
-        const item = try self.alloc.create(ListItem);
-        item.* = .{ .data = data };
-        self.list.prepend(&item.node);
+        if (side == .left)
+            self.list.prepend(&item.node)
+        else
+            self.list.append(&item.node);
         self.len += 1;
     }
 };
