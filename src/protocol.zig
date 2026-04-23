@@ -406,7 +406,7 @@ const TestCtx = struct {
         const action = try handleCommand(alloc, &self.store, .{ .array = resp_args });
         const resp = switch (action) {
             .response => |r| r,
-            .push => |p| p.response,
+            .wake => |p| p.response,
             .block => return error.UnexpectedBlock,
         };
         var a: std.io.Writer.Allocating = .init(alloc);
@@ -604,12 +604,12 @@ test "handleCommand: BLPOP timeout 0 means block forever" {
     }
 }
 
-test "handleCommand: RPUSH returns push action with correct key" {
+test "handleCommand: RPUSH returns wake action with correct key" {
     var ctx = TestCtx.init();
     defer ctx.deinit();
     const action = try ctx.cmdAction(&.{ "RPUSH", "mylist", "a" });
     switch (action) {
-        .push => |p| {
+        .wake => |p| {
             try std.testing.expectEqualStrings("mylist", p.key);
             const alloc = ctx.arena.allocator();
             var a: std.io.Writer.Allocating = .init(alloc);
@@ -694,6 +694,85 @@ test "handleCommand: TYPE returns stream for stream key" {
     defer ctx.deinit();
     _ = try ctx.cmd(&.{ "XADD", "mystream", "1-0", "k", "v" });
     try ctx.expect("+stream\r\n", &.{ "TYPE", "mystream" });
+}
+
+test "handleCommand: XREAD single stream returns entries after id" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "XADD", "s1", "1-0", "a", "1" });
+    _ = try ctx.cmd(&.{ "XADD", "s1", "2-0", "b", "2" });
+    // XREAD STREAMS s1 0-0 — should return both entries
+    const result = try ctx.cmd(&.{ "XREAD", "STREAMS", "s1", "0-0" });
+    // outer array: 1 stream, inner: [key, entries]
+    try std.testing.expect(std.mem.indexOf(u8, result, "s1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "1-0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "2-0") != null);
+}
+
+test "handleCommand: XREAD returns null for non-existent stream" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    try ctx.expect("$-1\r\n", &.{ "XREAD", "STREAMS", "nostream", "0-0" });
+}
+
+test "handleCommand: XREAD multiple streams" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "XADD", "s1", "1-0", "a", "1" });
+    _ = try ctx.cmd(&.{ "XADD", "s2", "5-0", "x", "y" });
+    const result = try ctx.cmd(&.{ "XREAD", "STREAMS", "s1", "s2", "0-0", "0-0" });
+    try std.testing.expect(std.mem.indexOf(u8, result, "s1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "s2") != null);
+}
+
+test "handleCommand: XREAD exclusive start skips exact id match" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "XADD", "s1", "1-0", "a", "1" });
+    _ = try ctx.cmd(&.{ "XADD", "s1", "2-0", "b", "2" });
+    // Start after 1-0, should only return 2-0
+    const result = try ctx.cmd(&.{ "XREAD", "STREAMS", "s1", "1-0" });
+    try std.testing.expect(std.mem.indexOf(u8, result, "2-0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "1-0\r\n") == null);
+}
+
+test "handleCommand: XREAD with BLOCK returns block action when no data" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    const action = try ctx.cmdAction(&.{ "XREAD", "BLOCK", "5000", "STREAMS", "s1", "0-0" });
+    switch (action) {
+        .block => |b| {
+            try std.testing.expectEqual(@as(usize, 1), b.keys.len);
+            try std.testing.expectEqualStrings("s1", b.keys[0]);
+            try std.testing.expectEqual(@as(u64, 5000), b.timeout_ms);
+            switch (b.operation) {
+                .xread => |x| {
+                    try std.testing.expectEqual(@as(usize, 1), x.ids.len);
+                    try std.testing.expectEqualStrings("0-0", x.ids[0]);
+                },
+                else => return error.WrongOperation,
+            }
+        },
+        else => return error.WrongAction,
+    }
+}
+
+test "handleCommand: XREAD with BLOCK returns data immediately if available" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    _ = try ctx.cmd(&.{ "XADD", "s1", "1-0", "k", "v" });
+    const result = try ctx.cmd(&.{ "XREAD", "BLOCK", "0", "STREAMS", "s1", "0-0" });
+    try std.testing.expect(std.mem.indexOf(u8, result, "1-0") != null);
+}
+
+test "handleCommand: XADD returns wake action with correct key" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    const action = try ctx.cmdAction(&.{ "XADD", "mystream", "1-0", "k", "v" });
+    switch (action) {
+        .wake => |w| try std.testing.expectEqualStrings("mystream", w.key),
+        else => return error.WrongAction,
+    }
 }
 
 test "parse: ECHO as RESP array" {
