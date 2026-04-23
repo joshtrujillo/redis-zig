@@ -89,6 +89,7 @@ pub fn resolveWake(
                 .xread => |r| blk: {
                     var response: std.ArrayList(protocol.RespValue) = .empty;
                     for (entry.value.keys, r.ids) |key_str, id_str| {
+                        std.log.info("resolveWake xread: key={s} id={s}", .{ key_str, id_str });
                         const range_slice = store.streamQuery(key_str, id_str, "+", true) orelse continue;
                         const range_array = try protocol.assembleStreamResp(arena, range_slice);
                         const key_entry = try arena.alloc(protocol.RespValue, 2);
