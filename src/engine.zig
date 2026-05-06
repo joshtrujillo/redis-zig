@@ -125,7 +125,10 @@ pub fn execute(
             if (wrongArgs(items, 2)) |r| return r;
 
             const key = items[1].bulk_string;
-            const v = store.get(key) orelse return .{ .reply = .{ .null_value = {} } };
+            const v = store.get(key) orelse {
+                try store.set(key, "1", null);
+                return .{ .reply = .{ .integer = 1 } };
+            };
             const int_value: i64 = 1 + (std.fmt.parseInt(i64, v, 10) catch {
                 return .{ .reply = .{ .null_value = {} } };
             });
