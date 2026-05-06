@@ -51,6 +51,7 @@ const Command = enum {
     ECHO,
     SET,
     GET,
+    INCR,
     RPUSH,
     LPUSH,
     LRANGE,
@@ -119,6 +120,19 @@ pub fn execute(
             const key = items[1].bulk_string;
             const v = store.get(key) orelse return .{ .reply = .{ .null_value = {} } };
             return .{ .reply = .{ .bulk_string = v } };
+        },
+        .INCR => {
+            if (wrongArgs(items, 2)) |r| return r;
+
+            const key = items[1].bulk_string;
+            const v = store.get(key) orelse return .{ .reply = .{ .null_value = {} } };
+            const int_value: i64 = 1 + (std.fmt.parseInt(i64, v, 10) catch {
+                return .{ .reply = .{ .null_value = {} } };
+            });
+            var buf: [21]u8 = undefined;
+            const incr_str = try std.fmt.bufPrint(&buf, "{}", .{int_value});
+            try store.set(key, incr_str, null);
+            return .{ .reply = .{ .bulk_string = incr_str } };
         },
         .LPUSH, .RPUSH => |c| {
             if (wrongArgs(items, 3)) |r| return r;
