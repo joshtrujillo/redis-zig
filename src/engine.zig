@@ -130,7 +130,7 @@ pub fn execute(
                 return .{ .reply = .{ .integer = 1 } };
             };
             const int_value: i64 = 1 + (std.fmt.parseInt(i64, v, 10) catch {
-                return .{ .reply = .{ .null_value = {} } };
+                return .{ .reply = .{ .error_msg = "value is not an integer or out of range" } };
             });
             var buf: [21]u8 = undefined;
             const incr_str = try std.fmt.bufPrint(&buf, "{}", .{int_value});
