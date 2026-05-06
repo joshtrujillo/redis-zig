@@ -275,7 +275,13 @@ pub fn execute(
             var response: std.ArrayList(RespValue) = .empty;
             var has_results = false;
             for (keys, ids) |key_str, id_str| {
-                const range_slice = store.streamQuery(key_str, id_str, "+", true) orelse continue;
+                const resolved_id = if (std.ascii.eqlIgnoreCase(id_str, "$")) {
+                    store.streamLastId(arena.alloc, key_str);
+                } else {
+                    id_str;
+                };
+
+                const range_slice = store.streamQuery(key_str, resolved_id, "+", true) orelse continue;
                 if (range_slice.len == 0) continue;
                 has_results = true;
                 const range_array = try assembleStreamResp(arena, range_slice);
