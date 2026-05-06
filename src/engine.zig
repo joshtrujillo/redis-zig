@@ -62,6 +62,7 @@ const Command = enum {
     XADD,
     XRANGE,
     XREAD,
+    MULTI,
 
     pub fn parse(cmd_str: []const u8) ?Command {
         inline for (std.meta.fields(Command)) |f| {
@@ -320,6 +321,9 @@ pub fn execute(
             }
             return .{ .reply = .{ .null_value = {} } };
         },
+        .MULTI => {
+            return .{ .reply = .{ .simple_string = "OK" } };
+        }
     }
 }
 
