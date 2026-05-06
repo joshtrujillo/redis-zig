@@ -63,6 +63,7 @@ const Command = enum {
     XRANGE,
     XREAD,
     MULTI,
+    EXEC,
 
     pub fn parse(cmd_str: []const u8) ?Command {
         inline for (std.meta.fields(Command)) |f| {
@@ -323,7 +324,10 @@ pub fn execute(
         },
         .MULTI => {
             return .{ .reply = .{ .simple_string = "OK" } };
-        }
+        },
+        .EXEC => {
+            return .{ .reply = .{ .error_msg = "EXEC without MULTI" } };
+        },
     }
 }
 
