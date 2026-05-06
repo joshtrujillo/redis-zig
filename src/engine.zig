@@ -14,7 +14,7 @@ pub const BlockInfo = struct {
 
 pub const BlockedOp = union(enum) {
     blpop: void,
-    xread: struct { ids: [][]const u8 }, // the start IDs per key
+    xread: struct { ids: []storage.RecordId }, // the start IDs per key
 };
 
 pub const BlockedClient = struct {
@@ -26,10 +26,7 @@ pub const BlockedClient = struct {
         for (self.keys) |k| alloc.free(k);
         alloc.free(self.keys);
         switch (self.operation) {
-            .xread => |x| {
-                for (x.ids) |id| alloc.free(id);
-                alloc.free(x.ids);
-            },
+            .xread => |x| alloc.free(x.ids),
             .blpop => {},
         }
     }
@@ -275,13 +272,7 @@ pub fn execute(
             var response: std.ArrayList(RespValue) = .empty;
             var has_results = false;
             for (keys, ids) |key_str, id_str| {
-                const resolved_id = if (std.ascii.eqlIgnoreCase(id_str, "$"))
-                    try store.streamLastId(arena, key_str) orelse continue
-                else
-                    id_str;
-                std.log.info("resolved_id: {s}", .{resolved_id});
-
-                const range_slice = store.streamQuery(key_str, resolved_id, "+", true) orelse continue;
+                const range_slice = store.streamQuery(key_str, id_str, "+", true) orelse continue;
                 if (range_slice.len == 0) continue;
                 has_results = true;
                 const range_array = try assembleStreamResp(arena, range_slice);
@@ -296,10 +287,18 @@ pub fn execute(
             }
 
             if (block_ms) |timeout_ms| {
+                const resolved_ids = try arena.alloc(storage.RecordId, ids.len);
+                for (ids, keys, resolved_ids) |id_str, key_str, *out| {
+                    if (std.ascii.eqlIgnoreCase(id_str, "$")) {
+                        out.* = if (store.getStream(key_str)) |s| s.last_id else .{ .ms = 0, .sequence = 0 };
+                    } else {
+                        out.* = storage.RecordId.parseId(id_str) catch return .{ .reply = .{ .error_msg = "Invalid stream ID" } };
+                    }
+                }
                 return .{ .block = .{
                     .keys = keys,
                     .timeout_ms = timeout_ms,
-                    .operation = .{ .xread = .{ .ids = ids } },
+                    .operation = .{ .xread = .{ .ids = resolved_ids } },
                 } };
             }
             return .{ .reply = .{ .null_value = {} } };
@@ -318,8 +317,8 @@ pub fn blockClient(
     const operation: BlockedOp = switch (info.operation) {
         .blpop => .{ .blpop = {} },
         .xread => |x| blk: {
-            const ids = try alloc.alloc([]const u8, x.ids.len);
-            for (x.ids, ids) |src, *dst| dst.* = try alloc.dupe(u8, src);
+            const ids = try alloc.alloc(storage.RecordId, x.ids.len);
+            @memcpy(ids, x.ids);
             break :blk .{ .xread = .{ .ids = ids } };
         },
     };
@@ -389,9 +388,8 @@ pub fn resolveWake(
                 },
                 .xread => |r| blk: {
                     var response: std.ArrayList(RespValue) = .empty;
-                    for (entry.value.keys, r.ids) |key_str, id_str| {
-                        std.log.info("resolveWake xread: key={s} id={s}", .{ key_str, id_str });
-                        const range_slice = store.streamQuery(key_str, id_str, "+", true) orelse continue;
+                    for (entry.value.keys, r.ids) |key_str, id| {
+                        const range_slice = store.streamQueryFrom(key_str, id) orelse continue;
                         if (range_slice.len == 0) continue;
                         const range_array = try assembleStreamResp(arena, range_slice);
                         const key_entry = try arena.alloc(RespValue, 2);

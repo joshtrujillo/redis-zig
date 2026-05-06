@@ -204,9 +204,19 @@ pub const Store = struct {
         return items[lower .. upper + 1];
     }
 
-    pub fn streamLastId(self: *Store, alloc: std.mem.Allocator, key: []const u8) !?[]const u8 {
+    pub fn streamQueryFrom(self: *Store, key: []const u8, start_id: RecordId) ?[]const StreamRecord {
         const stream = self.getStream(key) orelse return null;
-        return try stream.last_id.toStr(alloc);
+        const items = stream.entries.items;
+        const lower = getLowerBound(items, start_id, true);
+        return items[lower..];
+    }
+
+    pub fn getStream(self: *Store, key: []const u8) ?*Stream {
+        const value = self.values.getPtr(key) orelse return null;
+        return switch (value.*) {
+            .stream => |*s| s,
+            else => null,
+        };
     }
 
     fn getLowerBound(items: []StreamRecord, start_id: RecordId, exclusive_start: bool) usize {
@@ -240,14 +250,6 @@ pub const Store = struct {
         const value = self.values.getPtr(key) orelse return null;
         return switch (value.*) {
             .list => |*l| l,
-            else => null,
-        };
-    }
-
-    fn getStream(self: *Store, key: []const u8) ?*Stream {
-        const value = self.values.getPtr(key) orelse return null;
-        return switch (value.*) {
-            .stream => |*s| s,
             else => null,
         };
     }
