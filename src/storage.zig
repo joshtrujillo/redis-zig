@@ -1,11 +1,13 @@
+// src/storage.zig
+
 const std = @import("std");
 
 pub const Side = enum { left, right };
 
-// Main storage struct that uses two maps:
-// - values: maps keys to their Value (string, list, or stream)
-// - expiry: maps keys to their expiration timestamp (only for keys with TTL)
-// The expiry map borrows key pointers from the values map.
+/// Main storage struct that uses two maps:
+/// - values: maps keys to their Value (string, list, or stream)
+/// - expiry: maps keys to their expiration timestamp (only for keys with TTL)
+/// The expiry map borrows key pointers from the values map.
 pub const Store = struct {
     values: std.StringHashMap(Value),
     expiry: std.StringHashMap(i64),
@@ -250,7 +252,7 @@ pub const Store = struct {
         return std.time.milliTimestamp() >= exp;
     }
 
-    // Removes a key from both maps, freeing the owned key and value.
+    /// Removes a key from both maps, freeing the owned key and value.
     fn remove(self: *Store, key: []const u8) void {
         _ = self.expiry.remove(key);
         if (self.values.fetchRemove(key)) |kv| {

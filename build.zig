@@ -24,7 +24,7 @@ pub fn build(b: *std.Build) void {
     const test_files: []const []const u8 = &.{
         "src/protocol.zig",
         "src/storage.zig",
-        "src/server.zig",
+        "src/engine.zig",
     };
 
     const test_step = b.step("test", "Run all unit tests");
