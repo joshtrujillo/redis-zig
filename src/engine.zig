@@ -132,7 +132,7 @@ pub fn execute(
             var buf: [21]u8 = undefined;
             const incr_str = try std.fmt.bufPrint(&buf, "{}", .{int_value});
             try store.set(key, incr_str, null);
-            return .{ .reply = .{ .bulk_string = incr_str } };
+            return .{ .reply = .{ .integer = int_value } };
         },
         .LPUSH, .RPUSH => |c| {
             if (wrongArgs(items, 3)) |r| return r;
