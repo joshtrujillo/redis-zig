@@ -204,9 +204,9 @@ pub const Store = struct {
         return items[lower .. upper + 1];
     }
 
-    pub fn streamLastId(self: *Store, alloc: std.mem.Allocator, key: []const u8) ?[]const u8 {
+    pub fn streamLastId(self: *Store, alloc: std.mem.Allocator, key: []const u8) !?[]const u8 {
         const stream = self.getStream(key) orelse return null;
-        return stream.last_id.toStr(alloc);
+        return try stream.last_id.toStr(alloc);
     }
 
     fn getLowerBound(items: []StreamRecord, start_id: RecordId, exclusive_start: bool) usize {
