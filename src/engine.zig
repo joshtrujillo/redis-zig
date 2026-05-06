@@ -279,6 +279,7 @@ pub fn execute(
                     try store.streamLastId(arena, key_str) orelse continue
                 else
                     id_str;
+                std.log.info("resolved_id: {s}", .{resolved_id});
 
                 const range_slice = store.streamQuery(key_str, resolved_id, "+", true) orelse continue;
                 if (range_slice.len == 0) continue;
