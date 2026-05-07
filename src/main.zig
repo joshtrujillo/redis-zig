@@ -165,6 +165,8 @@ fn processCommand(
     if (std.ascii.eqlIgnoreCase(cmd_name, "MULTI")) {
         client.queued_commands = .empty;
         return sendReply(client, server_alloc, &.{ .simple_string = "OK" });
+    } else if (std.ascii.eqlIgnoreCase(cmd_name, "EXEC")) {
+        return sendReply(client, server_alloc, &.{ .error_msg = "EXEC without MULTI"});
     }
 
     // Normal execution
