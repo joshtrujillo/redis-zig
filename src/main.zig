@@ -141,11 +141,13 @@ fn processCommand(
     const cmd_name = value.array[0].bulk_string;
 
     // Handle MULTI, EXEC, and DISCARD
-    if (client.queued_commands) |_| {
+    if (client.queued_commands) |*queue| {
         // in MULTI mode
         if (std.ascii.eqlIgnoreCase(cmd_name, "EXEC")) {
             // drain queue, execute each, collect replies
-            return;
+
+            const reply = execQueue(queue);
+            return sendReply(client, server_alloc, &reply);
         }
         if (std.ascii.eqlIgnoreCase(cmd_name, "DISCARD")) {
             // clear queue, set to null, reply +OK
@@ -180,4 +182,8 @@ fn processCommand(
         },
         .block => |b| try engine.blockClient(blocked, server_alloc, fd, b),
     }
+}
+
+fn execQueue(_: *std.ArrayList(protocol.RespValue)) protocol.RespValue {
+    return .{ .array = &.{} };
 }
