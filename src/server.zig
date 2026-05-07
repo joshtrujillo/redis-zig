@@ -235,6 +235,10 @@ pub const Server = struct {
             return self.sendReply(client, &.{ .error_msg = "EXEC without MULTI" });
         }
 
+        if (std.ascii.eqlIgnoreCase(cmd_name, "DISCARD")) {
+            return self.sendReply(client, &.{ .error_msg = "DISCARD without MULTI" });
+        }
+
         // Normal execution
         try self.executeAndApply(client, fd, value, arena);
     }
