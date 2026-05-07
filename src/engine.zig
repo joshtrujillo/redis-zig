@@ -800,7 +800,8 @@ test "execute: XREAD with BLOCK returns block effect when no data" {
             switch (b.operation) {
                 .xread => |x| {
                     try std.testing.expectEqual(@as(usize, 1), x.ids.len);
-                    try std.testing.expectEqualStrings("0-0", x.ids[0]);
+                    try std.testing.expectEqual(@as(u64, 0), x.ids[0].ms);
+                    try std.testing.expectEqual(@as(u64, 0), x.ids[0].sequence);
                 },
                 else => return error.WrongOperation,
             }
@@ -884,8 +885,8 @@ test "resolveWake: xread wakes blocked client with new stream entries" {
 
     const keys = try std.testing.allocator.alloc([]const u8, 1);
     keys[0] = try std.testing.allocator.dupe(u8, "mystream");
-    const ids = try std.testing.allocator.alloc([]const u8, 1);
-    ids[0] = try std.testing.allocator.dupe(u8, "0-0");
+    const ids = try std.testing.allocator.alloc(storage.RecordId, 1);
+    ids[0] = .{ .ms = 0, .sequence = 0 };
     try blocked.put(7, .{
         .keys = keys,
         .deadline_ms = null,

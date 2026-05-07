@@ -10,14 +10,12 @@ pub const Connection = struct {
     stream: net.Stream,
     recv_buf: RingBuffer,
     send_buf: std.ArrayList(u8),
-    parser: protocol.Parser,
 
     pub fn init(stream: net.Stream) !Connection {
         return .{
             .stream = stream,
             .recv_buf = try RingBuffer.init(4096),
             .send_buf = .empty,
-            .parser = .{},
         };
     }
 
