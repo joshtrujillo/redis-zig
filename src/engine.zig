@@ -6,30 +6,15 @@ const protocol = @import("protocol.zig");
 const storage = @import("storage.zig");
 const RespValue = protocol.RespValue;
 
-pub const BlockInfo = struct {
-    timeout_ms: u64, // 0 is block forever
-    keys: [][]const u8,
-    operation: BlockedOp,
-};
-
 pub const BlockedOp = union(enum) {
     blpop: void,
-    xread: struct { ids: []storage.RecordId }, // the start IDs per key
+    xread: struct { ids: []storage.RecordId },
 };
 
-pub const BlockedClient = struct {
-    deadline_ms: ?i64,
+pub const BlockInfo = struct {
+    timeout_ms: u64, // 0 means block forever
     keys: [][]const u8,
-    operation: BlockedOp = .{ .blpop = {} },
-
-    pub fn deinit(self: *BlockedClient, alloc: std.mem.Allocator) void {
-        for (self.keys) |k| alloc.free(k);
-        alloc.free(self.keys);
-        switch (self.operation) {
-            .xread => |x| alloc.free(x.ids),
-            .blpop => {},
-        }
-    }
+    operation: BlockedOp,
 };
 
 pub const Effect = union(enum) {
@@ -41,10 +26,6 @@ pub const Effect = union(enum) {
     reply: RespValue,
 };
 
-pub const WakeResult = struct {
-    fd: posix.socket_t,
-    response: RespValue,
-};
 
 const Command = enum {
     PING,
@@ -62,8 +43,6 @@ const Command = enum {
     XADD,
     XRANGE,
     XREAD,
-    MULTI,
-    EXEC,
 
     pub fn parse(cmd_str: []const u8) ?Command {
         inline for (std.meta.fields(Command)) |f| {
@@ -322,118 +301,11 @@ pub fn execute(
             }
             return .{ .reply = .{ .null_value = {} } };
         },
-        .MULTI => {
-            return .{ .reply = .{ .simple_string = "OK" } };
-        },
-        .EXEC => {
-            return .{ .reply = .{ .error_msg = "EXEC without MULTI" } };
-        },
     }
 }
 
-pub fn blockClient(
-    blocked: *std.AutoHashMap(posix.socket_t, BlockedClient),
-    alloc: std.mem.Allocator,
-    fd: posix.socket_t,
-    info: BlockInfo,
-) !void {
-    const keys = try alloc.alloc([]const u8, info.keys.len);
-    for (info.keys, keys) |src, *dst| dst.* = try alloc.dupe(u8, src);
-    const operation: BlockedOp = switch (info.operation) {
-        .blpop => .{ .blpop = {} },
-        .xread => |x| blk: {
-            const ids = try alloc.alloc(storage.RecordId, x.ids.len);
-            @memcpy(ids, x.ids);
-            break :blk .{ .xread = .{ .ids = ids } };
-        },
-    };
-    const deadline_ms: ?i64 = if (info.timeout_ms == 0) null else std.time.milliTimestamp() + @as(i64, @intCast(info.timeout_ms));
-    try blocked.put(fd, .{ .keys = keys, .deadline_ms = deadline_ms, .operation = operation });
-}
 
-pub fn computeTimeout(blocked: *std.AutoHashMap(posix.socket_t, BlockedClient)) i32 {
-    var poll_timeout_ms: i32 = -1;
-    const now = std.time.milliTimestamp();
-    var it = blocked.iterator();
-    while (it.next()) |e| {
-        if (e.value_ptr.deadline_ms) |dl| {
-            const ms: i32 = @intCast(@max(0, @min(dl - now, std.math.maxInt(i32))));
-            if (poll_timeout_ms == -1 or ms < poll_timeout_ms) poll_timeout_ms = ms;
-        }
-    }
-    return poll_timeout_ms;
-}
-
-/// Returns list of expired fds. Removes them from blocked and calls deinit.
-/// Caller is responsible for sending null responses to these fds.
-pub fn expireBlocked(
-    alloc: std.mem.Allocator,
-    blocked: *std.AutoHashMap(posix.socket_t, BlockedClient),
-) ![]posix.socket_t {
-    const now_ms = std.time.milliTimestamp();
-    var expired: std.ArrayList(posix.socket_t) = .empty;
-    var it = blocked.iterator();
-    while (it.next()) |e| {
-        if (e.value_ptr.deadline_ms) |dl_ms|
-            if (now_ms >= dl_ms) try expired.append(alloc, e.key_ptr.*);
-    }
-    for (expired.items) |fd| {
-        var entry = blocked.fetchRemove(fd).?;
-        entry.value.deinit(alloc);
-    }
-    return try expired.toOwnedSlice(alloc);
-}
-
-/// Find the first blocked client waiting on `key`, compute its response,
-/// remove it from `blocked`, and return what to send.
-pub fn resolveWake(
-    key: []const u8,
-    store: *storage.Store,
-    blocked: *std.AutoHashMap(posix.socket_t, BlockedClient),
-    server_alloc: std.mem.Allocator,
-    arena: std.mem.Allocator,
-) !?WakeResult {
-    var it = blocked.iterator();
-
-    while (it.next()) |e| {
-        for (e.value_ptr.keys) |k| {
-            if (!std.mem.eql(u8, k, key)) continue;
-
-            const fd = e.key_ptr.*;
-            var entry = blocked.fetchRemove(fd).?;
-            defer entry.value.deinit(server_alloc);
-
-            const resp: RespValue = switch (entry.value.operation) {
-                .blpop => blk: {
-                    const popped = try store.lpop(arena, key, 1) orelse return null;
-                    const resp_items = try arena.alloc(RespValue, 2);
-                    resp_items[0] = .{ .bulk_string = key };
-                    resp_items[1] = .{ .bulk_string = popped[0] };
-                    break :blk .{ .array = resp_items };
-                },
-                .xread => |r| blk: {
-                    var response: std.ArrayList(RespValue) = .empty;
-                    for (entry.value.keys, r.ids) |key_str, id| {
-                        const range_slice = store.streamQueryFrom(key_str, id) orelse continue;
-                        if (range_slice.len == 0) continue;
-                        const range_array = try assembleStreamResp(arena, range_slice);
-                        const key_entry = try arena.alloc(RespValue, 2);
-                        // Dupe key_str into arena since entry.value.deinit will free the originals
-                        key_entry[0] = .{ .bulk_string = try arena.dupe(u8, key_str) };
-                        key_entry[1] = .{ .array = range_array };
-                        try response.append(arena, .{ .array = key_entry });
-                    }
-                    break :blk .{ .array = try response.toOwnedSlice(arena) };
-                },
-            };
-
-            return .{ .fd = fd, .response = resp };
-        }
-    }
-    return null;
-}
-
-fn assembleStreamResp(alloc: std.mem.Allocator, stream_slice: []const storage.StreamRecord) ![]RespValue {
+pub fn assembleStreamResp(alloc: std.mem.Allocator, stream_slice: []const storage.StreamRecord) ![]RespValue {
     const result = try alloc.alloc(RespValue, stream_slice.len);
     for (stream_slice, result) |record, *resp| {
         const id_str = try record.id.toStr(alloc);
@@ -828,116 +700,3 @@ test "execute: XADD returns reply_and_wake with correct key" {
     }
 }
 
-test "computeTimeout: returns -1 with no blocked clients" {
-    var blocked = std.AutoHashMap(posix.socket_t, BlockedClient).init(std.testing.allocator);
-    defer blocked.deinit();
-    try std.testing.expectEqual(@as(i32, -1), computeTimeout(&blocked));
-}
-
-test "computeTimeout: returns -1 when deadline is null (block forever)" {
-    var blocked = std.AutoHashMap(posix.socket_t, BlockedClient).init(std.testing.allocator);
-    defer blocked.deinit();
-    const keys = try std.testing.allocator.alloc([]const u8, 1);
-    keys[0] = try std.testing.allocator.dupe(u8, "k");
-    try blocked.put(10, .{ .keys = keys, .deadline_ms = null });
-    defer {
-        var entry = blocked.fetchRemove(10).?;
-        entry.value.deinit(std.testing.allocator);
-    }
-    try std.testing.expectEqual(@as(i32, -1), computeTimeout(&blocked));
-}
-
-test "resolveWake: blpop wakes blocked client and returns response" {
-    var store = storage.Store.init(std.testing.allocator);
-    defer store.deinit();
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var blocked = std.AutoHashMap(posix.socket_t, BlockedClient).init(std.testing.allocator);
-    defer blocked.deinit();
-
-    _ = try store.push("mylist", "hello", .right);
-
-    const keys = try std.testing.allocator.alloc([]const u8, 1);
-    keys[0] = try std.testing.allocator.dupe(u8, "mylist");
-    try blocked.put(42, .{ .keys = keys, .deadline_ms = null });
-
-    const result = try resolveWake("mylist", &store, &blocked, std.testing.allocator, arena.allocator());
-    try std.testing.expect(result != null);
-    try std.testing.expectEqual(@as(posix.socket_t, 42), result.?.fd);
-    try std.testing.expectEqual(@as(u32, 0), blocked.count());
-
-    const arr = result.?.response.array;
-    try std.testing.expectEqual(@as(usize, 2), arr.len);
-    try std.testing.expectEqualStrings("mylist", arr[0].bulk_string);
-    try std.testing.expectEqualStrings("hello", arr[1].bulk_string);
-}
-
-test "resolveWake: xread wakes blocked client with new stream entries" {
-    var store = storage.Store.init(std.testing.allocator);
-    defer store.deinit();
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var blocked = std.AutoHashMap(posix.socket_t, BlockedClient).init(std.testing.allocator);
-    defer blocked.deinit();
-
-    var fields = [_][]const u8{ "temp", "42" };
-    _ = try store.xadd("mystream", "1-0", &fields);
-
-    const keys = try std.testing.allocator.alloc([]const u8, 1);
-    keys[0] = try std.testing.allocator.dupe(u8, "mystream");
-    const ids = try std.testing.allocator.alloc(storage.RecordId, 1);
-    ids[0] = .{ .ms = 0, .sequence = 0 };
-    try blocked.put(7, .{
-        .keys = keys,
-        .deadline_ms = null,
-        .operation = .{ .xread = .{ .ids = ids } },
-    });
-
-    const result = try resolveWake("mystream", &store, &blocked, std.testing.allocator, arena.allocator());
-    try std.testing.expect(result != null);
-    try std.testing.expectEqual(@as(posix.socket_t, 7), result.?.fd);
-    try std.testing.expectEqual(@as(u32, 0), blocked.count());
-
-    const outer = result.?.response.array;
-    try std.testing.expectEqual(@as(usize, 1), outer.len);
-    const stream_entry = outer[0].array;
-    try std.testing.expectEqualStrings("mystream", stream_entry[0].bulk_string);
-}
-
-test "resolveWake: returns null when no blocked client matches key" {
-    var store = storage.Store.init(std.testing.allocator);
-    defer store.deinit();
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var blocked = std.AutoHashMap(posix.socket_t, BlockedClient).init(std.testing.allocator);
-    defer blocked.deinit();
-
-    const result = try resolveWake("nokey", &store, &blocked, std.testing.allocator, arena.allocator());
-    try std.testing.expect(result == null);
-}
-
-test "resolveWake: only wakes first matching client (FIFO)" {
-    var store = storage.Store.init(std.testing.allocator);
-    defer store.deinit();
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var blocked = std.AutoHashMap(posix.socket_t, BlockedClient).init(std.testing.allocator);
-    defer {
-        var it = blocked.valueIterator();
-        while (it.next()) |b| b.deinit(std.testing.allocator);
-        blocked.deinit();
-    }
-
-    _ = try store.push("q", "val1", .right);
-    _ = try store.push("q", "val2", .right);
-
-    for ([_]posix.socket_t{ 10, 20 }) |fd| {
-        const keys = try std.testing.allocator.alloc([]const u8, 1);
-        keys[0] = try std.testing.allocator.dupe(u8, "q");
-        try blocked.put(fd, .{ .keys = keys, .deadline_ms = null });
-    }
-
-    const r1 = try resolveWake("q", &store, &blocked, std.testing.allocator, arena.allocator());
-    try std.testing.expect(r1 != null);
-    try std.testing.expectEqual(@as(u32, 1), blocked.count());
-}
