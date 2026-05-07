@@ -145,8 +145,8 @@ fn processCommand(
         // in MULTI mode
         if (std.ascii.eqlIgnoreCase(cmd_name, "EXEC")) {
             // drain queue, execute each, collect replies
-
             const reply = execQueue(queue);
+            client.queued_commands = null;
             return sendReply(client, server_alloc, &reply);
         }
         if (std.ascii.eqlIgnoreCase(cmd_name, "DISCARD")) {
