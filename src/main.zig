@@ -158,7 +158,8 @@ fn processCommand(
             return sendReply(client, server_alloc, &.{ .error_msg = "MULTI calls can not be nested" });
         }
         // queue the command, reply +QUEUED
-        return;
+        try queue.append(server_alloc, value);
+        return sendReply(client, server_alloc, &.{ .simple_string = "QUEUED"});
     }
 
     // Enter MULTI
