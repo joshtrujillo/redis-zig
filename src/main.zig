@@ -2,7 +2,6 @@
 
 const std = @import("std");
 const Server = @import("server.zig").Server;
-const protocol = @import("protocol.zig");
 
 pub fn main() !void {
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;

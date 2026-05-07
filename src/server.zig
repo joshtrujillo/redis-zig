@@ -30,7 +30,10 @@ pub const Client = struct {
     queued_commands: ?std.ArrayList(protocol.RespValue) = null,
 
     pub fn deinit(self: *Client, alloc: std.mem.Allocator) void {
-        if (self.queued_commands) |*q| q.deinit(alloc);
+        if (self.queued_commands) |*q| {
+            for (q.items) |cmd| cmd.free(alloc);
+            q.deinit(alloc);
+        }
         self.conn.deinit(alloc);
         self.* = undefined;
     }
@@ -189,13 +192,27 @@ pub const Server = struct {
         // Handle MULTI, EXEC, and DISCARD
         if (client.queued_commands) |*queue| {
             if (std.ascii.eqlIgnoreCase(cmd_name, "EXEC")) {
-                for (queue.items) |cmd| {
-                    try self.executeAndApply(client, fd, cmd, arena);
+                defer {
+                    for (queue.items) |cmd| cmd.free(self.alloc);
+                    queue.deinit(self.alloc);
+                    client.queued_commands = null;
                 }
-                client.queued_commands = null;
-                return self.sendReply(client, &.{ .array = &.{} });
+                const replies = try arena.alloc(protocol.RespValue, queue.items.len);
+                for (queue.items, replies) |cmd, *reply_slot| {
+                    reply_slot.* = switch (try engine.execute(arena, &self.store, cmd)) {
+                        .reply => |r| r,
+                        .reply_and_wake => |r| blk: {
+                            try self.resolveWake(r.wake_key, arena);
+                            break :blk r.reply;
+                        },
+                        .block => .{ .null_value = {} },
+                    };
+                }
+                return self.sendReply(client, &.{ .array = replies });
             }
             if (std.ascii.eqlIgnoreCase(cmd_name, "DISCARD")) {
+                for (queue.items) |cmd| cmd.free(self.alloc);
+                queue.deinit(self.alloc);
                 client.queued_commands = null;
                 return self.sendReply(client, &.{ .simple_string = "OK" });
             }
@@ -203,8 +220,8 @@ pub const Server = struct {
                 return self.sendReply(client, &.{ .error_msg = "MULTI calls can not be nested" });
             }
             // queue the command, reply +QUEUED
-            const owned_value = self.alloc.dupe(protocol.RespValue, value);
-            try queue.append(self.alloc, owned_value);
+            const owned = try value.dupe(self.alloc);
+            try queue.append(self.alloc, owned);
             return self.sendReply(client, &.{ .simple_string = "QUEUED" });
         }
 

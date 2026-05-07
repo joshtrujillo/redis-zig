@@ -15,6 +15,33 @@ pub const RespValue = union(enum) {
         for (strings, arr) |s, *r| r.* = .{ .bulk_string = s };
         return arr;
     }
+
+    pub fn dupe(self: RespValue, alloc: std.mem.Allocator) !RespValue {
+        return switch (self) {
+            .bulk_string => |s| .{ .bulk_string = try alloc.dupe(u8, s) },
+            .simple_string => |s| .{ .simple_string = try alloc.dupe(u8, s) },
+            .error_msg => |s| .{ .error_msg = try alloc.dupe(u8, s) },
+            .array => |arr| {
+                const new = try alloc.alloc(RespValue, arr.len);
+                for (arr, new) |item, *out| out.* = try item.dupe(alloc);
+                return .{ .array = new };
+            },
+            .integer, .null_value => self,
+        };
+    }
+
+    pub fn free(self: RespValue, alloc: std.mem.Allocator) void {
+        switch (self) {
+            .bulk_string => |s| alloc.free(s),
+            .simple_string => |s| alloc.free(s),
+            .error_msg => |s| alloc.free(s),
+            .array => |arr| {
+                for (arr) |item| item.free(alloc);
+                alloc.free(arr);
+            },
+            .integer, .null_value => {},
+        }
+    }
 };
 
 pub const Parser = struct {
