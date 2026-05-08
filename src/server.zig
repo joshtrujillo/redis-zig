@@ -21,6 +21,7 @@ pub const BlockedClient = struct {
             .xread => |x| alloc.free(x.ids),
             .blpop => {},
         }
+        self.* = undefined;
     }
 };
 
@@ -39,6 +40,10 @@ pub const Client = struct {
     }
 };
 
+pub const ServerConfig = struct {
+    port: u16 = 6379,
+};
+
 pub const Server = struct {
     alloc: std.mem.Allocator,
     store: storage.Store,
@@ -47,8 +52,8 @@ pub const Server = struct {
     reactor: el.Reactor(el.PollBackend),
     listener: net.Server,
 
-    pub fn init(alloc: std.mem.Allocator) !Server {
-        const address = try net.Address.resolveIp("127.0.0.1", 6379);
+    pub fn init(alloc: std.mem.Allocator, config: ServerConfig) !Server {
+        const address = try net.Address.resolveIp("127.0.0.1", config.port);
         var srv = Server{
             .alloc = alloc,
             .store = storage.Store.init(alloc),
