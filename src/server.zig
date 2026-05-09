@@ -267,6 +267,10 @@ pub const Server = struct {
             return self.sendReply(client, &.{ .bulk_string = info_str });
         }
 
+        if (std.ascii.eqlIgnoreCase(cmd_name, "REPLCONF")) {
+            return self.sendReply(client, &.{ .simple_string = "OK" });
+        }
+
         // Normal execution
         try self.executeAndApply(client, fd, value, arena);
     }
