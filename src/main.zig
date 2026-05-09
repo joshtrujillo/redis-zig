@@ -41,13 +41,20 @@ fn parseArgs() ?ServerConfig {
             .@"--replicaof" => {
                 config.role = "slave";
                 const val = args.next() orelse {
-                    std.log.err("--replicaof requires a host and port like:\n--replicaof \"localhost 6379\"", .{});
+                    std.log.err("--replicaof requires \"<host> <port>\"", .{});
                     return null;
                 };
-                config.replica_of = val;
-                std.log.info("parsed --replicaof string: {s}", .{config.replica_of.?});
+                var it = std.mem.splitScalar(u8, val, ' ');
+                config.master_host = it.first();
+                const port_str = it.next() orelse {
+                    std.log.err("--replicaof requires \"<host> <port>\"", .{});
+                    return null;
+                };
+                config.master_port = std.fmt.parseInt(u16, port_str, 10) catch {
+                    std.log.err("Invalid master port: {s}", .{port_str});
+                    return null;
+                };
             },
-
             .@"--help", .@"-h" => {
                 printUsage();
                 return null;
