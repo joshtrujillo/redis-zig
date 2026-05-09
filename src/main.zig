@@ -7,6 +7,7 @@ const ServerConfig = server_mod.ServerConfig;
 
 const Flag = enum {
     @"--port",
+    @"--replicaof",
     @"--help",
     @"-h",
 
@@ -36,6 +37,14 @@ fn parseArgs() ?ServerConfig {
                     std.log.err("Invalid port: {s}", .{val});
                     return null;
                 };
+            },
+            .@"--replicaof" => {
+                config.role = "slave";
+                const val = args.next() orelse {
+                    std.log.err("--replicaof requires a host and port like:\n--replicaof \"localhost 6379\"", .{});
+                    return null;
+                };
+                config.replica_of = val;
             },
             .@"--help", .@"-h" => {
                 printUsage();

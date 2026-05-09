@@ -43,6 +43,7 @@ pub const Client = struct {
 pub const ServerConfig = struct {
     port: u16 = 6379,
     role: []const u8 = "master",
+    replica_of: ?[]const u8 = null,
 };
 
 pub const Server = struct {
