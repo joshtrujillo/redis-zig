@@ -256,7 +256,7 @@ pub const Server = struct {
             const info_str = try std.fmt.allocPrint(
                 arena,
                 "role:{s}\r\nmaster_replid:{s}\r\nmaster_offset:{d}",
-                .{ self.config.role, self.config.master_replid, self.config.master_repl_offset },
+                .{ self.config.role, self.config.master_replid.?, self.config.master_repl_offset },
             );
             return self.sendReply(client, &.{ .bulk_string = info_str });
         }
