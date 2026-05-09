@@ -248,7 +248,7 @@ pub const Server = struct {
         }
         
         if (std.ascii.eqlIgnoreCase(cmd_name, "INFO")) {
-            const info_str = std.fmt.allocPrint(arena, "role:{s}", .{self.config.role});
+            const info_str = try std.fmt.allocPrint(arena, "role:{s}", .{self.config.role});
             return self.sendReply(client, &.{ .bulk_string = info_str });
         }
 
