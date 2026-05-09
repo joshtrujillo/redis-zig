@@ -44,7 +44,7 @@ pub const ServerConfig = struct {
     port: u16 = 6379,
     role: []const u8 = "master",
     replica_of: ?[]const u8 = null,
-    master_replid: ?[]const u8 = null,
+    master_replid: ?[40]u8 = null,
     master_repl_offset: u64 = 0,
 };
 
@@ -69,7 +69,7 @@ pub const Server = struct {
             .config = config,
         };
         if (srv.config.master_replid == null)
-            srv.config.master_replid = &generateReplId();
+            srv.config.master_replid = generateReplId();
         try srv.reactor.register(srv.listener.stream.handle);
         return srv;
     }
@@ -253,7 +253,11 @@ pub const Server = struct {
         }
         
         if (std.ascii.eqlIgnoreCase(cmd_name, "INFO")) {
-            const info_str = try std.fmt.allocPrint(arena, "role:{s}", .{self.config.role});
+            const info_str = try std.fmt.allocPrint(
+                arena,
+                "role:{s}",
+                .{self.config.role},
+            );
             return self.sendReply(client, &.{ .bulk_string = info_str });
         }
 
