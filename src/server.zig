@@ -73,7 +73,7 @@ pub const Server = struct {
         };
         srv.config.master_replid = generateReplId();
         if (config.master_host) |host| {
-            srv.master_stream = try replication.connectToMaster(alloc, host, config.master_port.?);
+            srv.master_stream = try replication.connectToMaster(alloc, host, config.master_port.?, config.port);
             try srv.reactor.register(srv.master_stream.?.handle);
         }
         try srv.reactor.register(srv.listener.stream.handle);
