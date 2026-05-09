@@ -5,10 +5,9 @@ const net = std.net;
 const posix = std.posix;
 const protocol = @import("protocol.zig");
 
-pub fn connectToMaster(host: []const u8, port: u16) !net.Stream {
+pub fn connectToMaster(alloc: std.mem.Allocator, host: []const u8, port: u16) !net.Stream {
     // 1. TCP connect to master
-    const address = try net.Address.resolveIp(host, port);
-    const stream = try net.tcpConnectToAddress(address);
+    const stream = try net.tcpConnectToHost(alloc, host, port);
 
     var send_buf: [4096]u8 = undefined;
     var w: std.io.Writer = .fixed(&send_buf);
