@@ -71,11 +71,10 @@ pub const Server = struct {
             .listener = try address.listen(.{ .reuse_address = true }),
             .config = config,
         };
+        srv.config.master_replid = generateReplId();
         if (config.master_host) |host| {
             srv.master_stream = try replication.connectToMaster(alloc, host, config.master_port.?);
             try srv.reactor.register(srv.master_stream.?.handle);
-        } else {
-            srv.config.master_replid = generateReplId();
         }
         try srv.reactor.register(srv.listener.stream.handle);
         return srv;
