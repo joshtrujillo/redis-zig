@@ -44,7 +44,7 @@ pub const ServerConfig = struct {
     port: u16 = 6379,
     role: []const u8 = "master",
     replica_of: ?[]const u8 = null,
-    master_replid: []const u8 = generateReplId(),
+    master_replid: ?[]const u8 = null,
     master_repl_offset: u64 = 0,
 };
 
@@ -68,6 +68,8 @@ pub const Server = struct {
             .listener = try address.listen(.{ .reuse_address = true }),
             .config = config,
         };
+        if (srv.config.master_replid == null)
+            srv.config.master_replid = &generateReplId();
         try srv.reactor.register(srv.listener.stream.handle);
         return srv;
     }
