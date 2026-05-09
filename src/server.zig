@@ -42,6 +42,7 @@ pub const Client = struct {
 
 pub const ServerConfig = struct {
     port: u16 = 6379,
+    role: []const u8 = "master",
 };
 
 pub const Server = struct {
@@ -51,6 +52,7 @@ pub const Server = struct {
     blocked: std.AutoHashMap(posix.socket_t, BlockedClient),
     reactor: el.Reactor(el.PollBackend),
     listener: net.Server,
+    config: ServerConfig,
 
     pub fn init(alloc: std.mem.Allocator, config: ServerConfig) !Server {
         const address = try net.Address.resolveIp("127.0.0.1", config.port);
@@ -61,6 +63,7 @@ pub const Server = struct {
             .blocked = std.AutoHashMap(posix.socket_t, BlockedClient).init(alloc),
             .reactor = try el.Reactor(el.PollBackend).init(alloc),
             .listener = try address.listen(.{ .reuse_address = true }),
+            .config = config,
         };
         try srv.reactor.register(srv.listener.stream.handle);
         return srv;
@@ -243,6 +246,11 @@ pub const Server = struct {
         if (std.ascii.eqlIgnoreCase(cmd_name, "DISCARD")) {
             return self.sendReply(client, &.{ .error_msg = "DISCARD without MULTI" });
         }
+        
+        if (std.ascii.eqlIgnoreCase(cmd_name, "INFO")) {
+            const info_str = std.fmt.allocPrint(arena, "role:{s}", .{self.config.role});
+            return self.sendReply(client, &.{ .bulk_string = info_str });
+        }
 
         // Normal execution
         try self.executeAndApply(client, fd, value, arena);
@@ -252,8 +260,7 @@ pub const Server = struct {
         switch (try engine.execute(arena, &self.store, value)) {
             .reply => |r| try self.sendReply(client, &r),
             .reply_and_wake => |r| {
-                try self.sendReply(client, &r.reply);
-                std.log.info("wake: key={s} blocked_count={d}", .{ r.wake_key, self.blocked.count() });
+                try self.sendReply(client, &r.reply); std.log.info("wake: key={s} blocked_count={d}", .{ r.wake_key, self.blocked.count() });
                 try self.resolveWake(r.wake_key, arena);
             },
             .block => |b| try self.blockClient(fd, b),

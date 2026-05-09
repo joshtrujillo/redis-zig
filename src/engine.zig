@@ -45,10 +45,7 @@ const Command = enum {
     XREAD,
 
     pub fn parse(cmd_str: []const u8) ?Command {
-        inline for (std.meta.fields(Command)) |f| {
-            if (std.ascii.eqlIgnoreCase(cmd_str, f.name)) return @enumFromInt(f.value);
-        }
-        return null;
+        return std.meta.stringToEnum(Command, cmd_str);
     }
 };
 
