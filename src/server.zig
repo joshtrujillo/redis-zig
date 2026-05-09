@@ -273,7 +273,7 @@ pub const Server = struct {
                 return self.sendReply(client, &.{ .error_msg = "Psync error" });
 
             var reply_buf: [64]u8 = undefined;
-            const reply = std.fmt.bufPrint(&reply_buf, "FULLRESYNC {s} {d}", .{ self.config.master_replid, self.config.master_repl_offset }) catch unreachable;
+            const reply = std.fmt.bufPrint(&reply_buf, "FULLRESYNC {s} {d}", .{ self.config.master_replid.?, self.config.master_repl_offset }) catch unreachable;
             return self.sendReply(client, &.{ .simple_string = reply });
         }
 
