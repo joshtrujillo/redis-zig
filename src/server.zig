@@ -250,13 +250,11 @@ pub const Server = struct {
             return self.sendReply(client, &.{ .simple_string = "OK" });
         }
 
-        if (std.ascii.eqlIgnoreCase(cmd_name, "EXEC")) {
+        if (std.ascii.eqlIgnoreCase(cmd_name, "EXEC"))
             return self.sendReply(client, &.{ .error_msg = "EXEC without MULTI" });
-        }
 
-        if (std.ascii.eqlIgnoreCase(cmd_name, "DISCARD")) {
+        if (std.ascii.eqlIgnoreCase(cmd_name, "DISCARD"))
             return self.sendReply(client, &.{ .error_msg = "DISCARD without MULTI" });
-        }
         
         if (std.ascii.eqlIgnoreCase(cmd_name, "INFO")) {
             const info_str = try std.fmt.allocPrint(
@@ -267,8 +265,16 @@ pub const Server = struct {
             return self.sendReply(client, &.{ .bulk_string = info_str });
         }
 
-        if (std.ascii.eqlIgnoreCase(cmd_name, "REPLCONF")) {
+        if (std.ascii.eqlIgnoreCase(cmd_name, "REPLCONF"))
             return self.sendReply(client, &.{ .simple_string = "OK" });
+
+        if (std.ascii.eqlIgnoreCase(cmd_name, "PSYNC")) {
+            if (value.array.len < 3)
+                return self.sendReply(client, &.{ .error_msg = "Psync error" });
+
+            var reply_buf: [64]u8 = undefined;
+            const reply = std.fmt.bufPrint(&reply_buf, "FULLRESYNC {s} {d}", .{ self.config.master_replid, self.config.master_repl_offset }) catch unreachable;
+            return self.sendReply(client, &.{ .simple_string = reply });
         }
 
         // Normal execution
