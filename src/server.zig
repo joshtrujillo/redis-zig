@@ -44,6 +44,8 @@ pub const ServerConfig = struct {
     port: u16 = 6379,
     role: []const u8 = "master",
     replica_of: ?[]const u8 = null,
+    master_replid: []const u8 = generateReplId(),
+    master_repl_offset: u64 = 0,
 };
 
 pub const Server = struct {
@@ -274,3 +276,9 @@ pub const Server = struct {
         client.conn.send_buf = w.toArrayList();
     }
 };
+
+fn generateReplId() [40]u8 {
+    var raw: [20]u8 = undefined;
+    std.crypto.random.bytes(&raw);
+    return std.fmt.bytesToHex(raw, .lower);
+}

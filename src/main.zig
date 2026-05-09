@@ -46,6 +46,7 @@ fn parseArgs() ?ServerConfig {
                 };
                 config.replica_of = val;
             },
+
             .@"--help", .@"-h" => {
                 printUsage();
                 return null;
