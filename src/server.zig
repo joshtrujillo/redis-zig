@@ -8,6 +8,7 @@ const netx = @import("network.zig");
 const protocol = @import("protocol.zig");
 const storage = @import("storage.zig");
 const engine = @import("engine.zig");
+const replication = @import("replication.zig");
 
 pub const BlockedClient = struct {
     deadline_ms: ?i64,
@@ -57,6 +58,7 @@ pub const Server = struct {
     reactor: el.Reactor(el.PollBackend),
     listener: net.Server,
     config: ServerConfig,
+    master_stream: ?net.Stream = null,
 
     pub fn init(alloc: std.mem.Allocator, config: ServerConfig) !Server {
         const address = try net.Address.resolveIp("127.0.0.1", config.port);
@@ -69,8 +71,12 @@ pub const Server = struct {
             .listener = try address.listen(.{ .reuse_address = true }),
             .config = config,
         };
-        if (srv.config.master_replid == null)
+        if (config.master_host) |host| {
+            srv.master_stream = try replication.connectToMaster(host, config.master_port.?);
+            try srv.reactor.register(srv.master_stream.?.handle);
+        } else {
             srv.config.master_replid = generateReplId();
+        }
         try srv.reactor.register(srv.listener.stream.handle);
         return srv;
     }
