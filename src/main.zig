@@ -45,6 +45,7 @@ fn parseArgs() ?ServerConfig {
                     return null;
                 };
                 config.replica_of = val;
+                std.log.info("parsed --replicaof string: {s}", .{config.replica_of.?});
             },
 
             .@"--help", .@"-h" => {
